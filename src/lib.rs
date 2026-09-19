@@ -9,8 +9,8 @@
 // that loop acts on (the keepout family, escape, recruit).
 //
 // ONE LAW, TWO REALIZATIONS: this loop drives the arm (task_loop.rs, fixed base, fully actuated, the
-// desired wrench maps through J' directly) and the biped (simu's src/standing_loop.rs, floating base,
-// the wrench must be produced by ground contact instead). The realization differs; the law does not.
+// desired wrench maps through J' directly) and the biped (../g1-biped's src/standing_loop.rs, floating
+// base, the wrench must be produced by ground contact instead). The realization differs; the law does not.
 //
 // It was extracted from the simu crate's `src/ga_pid/` once the dependency graph made the order
 // obvious: the directory was already closed under itself — no `crate::` outside it, no model, no
@@ -19,9 +19,10 @@
 // drives (task_loop.rs is the ONLY file here that names a plant) and the efference copy it keeps.
 //
 // WHY IT IS A PROJECT OF ITS OWN: the law is stated once and read by two machines that share nothing
-// else, so it may not live under either of them. simu consumes this as a sibling path dependency
-// (`{ path = "../control-ga-pid" }`) and implements `Plant` for its own plants; this crate implements
-// nothing and drives whatever it is handed, which is what lets its own tests run without an engine.
+// else, so it may not live under either of them. The two products (`../z1-arm`, `../g1-biped`)
+// consume this as a sibling path dependency (`{ path = "../control-ga-pid" }`) and implement `Plant`
+// for their own plants; this crate implements nothing and drives whatever it is handed, which is what
+// lets its own tests run without an engine.
 
 pub mod box_ko;
 pub mod budget;

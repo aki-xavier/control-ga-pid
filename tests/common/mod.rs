@@ -1,12 +1,13 @@
 // common/mod.rs — the Rust plant the closed-loop tests drive, and the whole of what this crate needs
 // from a dynamics backend.
 //
-// It is the SAME integrator simu's engine binding runs, not a stand-in: semi-implicit Euler over the
-// PGA dynamics, the joint damping made implicit as (M + dt D), joint limits as bilateral constraints
-// on the acceleration, and the position clamp after the velocity update. What is left out is the
-// engine's world — the actor, the scene, the contact model — which no law reads (the engine only
-// mirrors the state, and its `Plant` methods are the same pure-Rust calls this file makes). So a
-// number measured here is the number simu's engine-backed bench measures, up to what contact adds.
+// It is the SAME integrator the products' engine-backed plants run, not a stand-in: semi-implicit
+// Euler over the PGA dynamics, the joint damping made implicit as (M + dt D), joint limits as
+// bilateral constraints on the acceleration, and the position clamp after the velocity update. What is
+// left out is the engine's world — the actor, the scene, the contact model — which no law reads (the
+// engine only mirrors the state, and its `Plant` methods are the same pure-Rust calls this file
+// makes), so a number measured here is the number the arm's engine-backed bench measures, up to what
+// contact adds.
 //
 // It lives in `tests/` and not in `src/` on purpose: this crate states the law, and an implementor of
 // `Plant` is a caller's object — an engine binding, a model-based view, or this.

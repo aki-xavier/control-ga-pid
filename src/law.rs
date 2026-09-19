@@ -5,11 +5,11 @@
 //
 // WHY THIS FILE EXISTS: the expression above was written out by hand at every call site — the arm's
 // three readings (task_loop.rs: step_joint, step_points, step_ff) and the biped's CoM loop
-// (simu's src/standing_loop.rs) — and hand-copied laws are as many laws as there are copies. ONE LAW,
-// TWO REALIZATIONS: the arm fixes its base and maps the plane numerator through J', the biped floats
-// and must produce it through ground contact, so what a loop adds around the law (a contact schedule's
-// soft factor, a passivity floor, an acceleration feedforward, the biped's pressure-point offset)
-// stays in the loop that adds it and never here.
+// (../g1-biped's src/standing_loop.rs) — and hand-copied laws are as many laws as there are copies.
+// ONE LAW, TWO REALIZATIONS: the arm fixes its base and maps the plane numerator through J', the biped
+// floats and must produce it through ground contact, so what a loop adds around the law (a contact
+// schedule's soft factor, a passivity floor, an acceleration feedforward, the biped's pressure-point
+// offset) stays in the loop that adds it and never here.
 
 use crate::design::PlaneDesign;
 use crate::gains::PlaneGains;

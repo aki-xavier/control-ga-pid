@@ -226,7 +226,8 @@ fn task_avoidance_projection() {
 }
 
 /// The keep-out escape an inflated shape asks for — the one keepout.rs entry point this file did not
-/// otherwise cover. The link Jacobian against finite differences of FK lives in simu's tests/urdf.rs.
+/// otherwise cover. The link Jacobian against finite differences of FK lives in
+/// `../control-model/tests/urdf.rs`.
 #[test]
 fn keepout_escape_inflated() {
     let c = Vec3::new(0.0, 0.0, 0.0);
@@ -253,7 +254,7 @@ fn keepout_escape_inflated() {
 }
 
 /// THE BUDGET'S BINDING CHANNEL NAMES A JOINT, NOT A SLOT: `motion_budget` scans joints by index
-/// and keeps answering "joint {i}" (simu's tests/bench_sims.rs pins that reading), while a caller
+/// and keeps answering "joint {i}" (../z1-arm/tests/bench_sims.rs pins that reading), while a caller
 /// that HAS the model's names resolves them through `with_names`. Pinned: the resolved name, the
 /// kept fallback, the non-answer for a budget that binds nothing, and no re-resolution.
 #[test]
@@ -297,7 +298,7 @@ fn the_budget_reads_the_binding_joint_through_the_models_names() {
     assert_eq!(none.with_names(&names).binding, "none");
 }
 
-/// The Z1 at home as the arm's own run path sees it (simu's src/bench/bench_sims.rs reads these
+/// The Z1 at home as the arm's own run path sees it (../z1-arm/src/bench/bench_sims.rs reads these
 /// terms off a model-only plant): the PGA model and chain, engine-free, plus the identified gravity
 /// stiffness the bench's `joint_k_eff` takes by central differences.
 fn z1_home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
@@ -328,7 +329,7 @@ fn z1_home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
 }
 
 /// THE ARM'S OWN RUN PATH ASKS THE BUDGET, AND THE VERDICT NAMES THE JOINT: the arm has no runtime
-/// (simu's benches in `src/bench/` and its examples are the run path), so the caller is that
+/// (the arm's benches in `src/bench/` and its examples are the run path), so the caller is that
 /// crate's `bench_sims::sim_setpoint_taskloop`, which asks this module's `budget_verdict` before its
 /// first command and RECORDS it, never enforced (the legs' guard ships off, the arm has no guard
 /// switch).

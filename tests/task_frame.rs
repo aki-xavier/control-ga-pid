@@ -1,7 +1,8 @@
 // task_frame.rs — GA_PID_AUDIT.md #19's pins: the task frame is world axes ABOUT THE TIP,
-// [v; w] order, J's linear block the tip's point Jacobian (pinned in simu's tests/urdf.rs). Lambda is
-// strongly coupled (cross-block correlation 0.80 at home, 0.996 bent), so "per-mode" placement
-// would be a different design; K = wn^2 Lambda is symmetric only under the shipped uniform poles.
+// [v; w] order, J's linear block the tip's point Jacobian (pinned in
+// `../control-model/tests/urdf.rs`). Lambda is strongly coupled (cross-block correlation 0.80 at home,
+// 0.996 bent), so "per-mode" placement would be a different design; K = wn^2 Lambda is symmetric only
+// under the shipped uniform poles.
 
 use control_ga_pid::inertia::task_space_inertia;
 use control_math::mat::Mat;

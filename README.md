@@ -1,8 +1,9 @@
 # control-ga-pid — the GA-PID control core
 
 A project of its own, and not a module inside anything that uses it: **one law,
-two realizations** — the arm of `simu` drives it from a fixed base, the biped
-drives the same expression through ground contact, and neither may own it.
+two realizations** — the arm (`../z1-arm`) drives it from a fixed base, the biped
+(`../g1-biped`) drives the same expression through ground contact, and neither may
+own it.
 MIT-licensed (see `LICENSE`).
 
 ## The law
@@ -67,8 +68,8 @@ not live under either of them:
 
 - **A law copied per caller is as many laws as there are copies.** The expression
   above was written out by hand at every call site before `law.rs` existed.
-- **Nothing here may sit above anything that uses it.** `simu`'s arm and its biped
-  both consume this as a sibling path dependency
+- **Nothing here may sit above anything that uses it.** The two products (`../z1-arm`
+  and `../g1-biped`) both consume this as a sibling path dependency
   (`{ path = "../control-ga-pid" }`) and implement `Plant` for their own plants;
   were the law stated inside either, the two could not be compared.
 
@@ -81,7 +82,8 @@ cargo run --release --example plane_mode_probe # GA_PID_AUDIT.md #19's premise
 ```
 
 `tests/` carries the plant the closed-loop tests drive (`common/mod.rs`): the same rigid-body ODE
-`simu` integrates — semi-implicit Euler over the PGA dynamics, implicit joint damping, joint limits
-as bilateral constraints — with the engine's **world mirror** left out, which no law reads. So it is
-not a stand-in, and the numbers it produces are the numbers `simu`'s engine-backed bench produces.
+the products' plants integrate — semi-implicit Euler over the PGA dynamics, implicit joint damping,
+joint limits as bilateral constraints — with the engine's **world mirror** left out, which no law
+reads. So it is not a stand-in, and the numbers it produces are the numbers the arm's engine-backed
+bench produces.
 Building it here is what lets `cargo test` in this directory need no MuJoCo and no `build.rs`.

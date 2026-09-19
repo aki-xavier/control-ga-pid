@@ -10,8 +10,8 @@
 // THE FRAME (GA_PID_AUDIT.md #19): every task-space quantity here is in world axes ABOUT THE TIP,
 // in [v; w] order — the error's first three slots are the tip's point-image difference and the last
 // three the world rotvec; J's rows are the tip's linear then angular rows (pinned against FK finite
-// differences in simu's tests/urdf.rs). The metric is Lambda = (J M^-1 J^T)^-1, refreshed as the
-// configuration moves; a non-uniform Poles configuration is reported when built.
+// differences in ../control-model/tests/urdf.rs). The metric is Lambda = (J M^-1 J^T)^-1, refreshed as
+// the configuration moves; a non-uniform Poles configuration is reported when built.
 
 use crate::escape::TaskAvoidance;
 use crate::gains::PlaneGains;
@@ -98,8 +98,8 @@ pub struct PlaneTaskLoop {
     /// eff is the arm's efference copy (`../control-base/src/efference.rs`): one channel per joint, the torque this
     /// loop COMMANDED against the generalized force the plant's step says it APPLIED, and their
     /// difference — the applied side reconstructed from the velocity the plant's integrator produced
-    /// (simu's `CEnginePlant::step` inverts to the torque it must have applied, per joint). A COPY only:
-    /// nothing here computes a number in the law from it.
+    /// (the arm's `CEnginePlant::step` inverts to the torque it must have applied, per joint). A COPY
+    /// only: nothing here computes a number in the law from it.
     ///
     /// The caller can break the pair: the plant must be stepped by the same `dt`, once per call, with
     /// its viscous damping equal to this loop's `damp` (an empty `damp` reads it as residual).
@@ -148,7 +148,8 @@ impl PlaneTaskLoop {
             i_aw_off: o.integral.i_anti_windup_off,
             i_acc: vec![0.0; m],
             u_lim: o.integral.u_lim.clone(),
-            // the contact schedule starts OPEN (k_ratio 1 = no softening); simu's bench_contact::contact_schedule sets it
+            // the contact schedule starts OPEN (k_ratio 1 = no softening); the arm's bench_contact's
+            // contact_schedule sets it
             k_ratio: 1.0,
             f_floor: 0.0,
             f_tau: 0.0,

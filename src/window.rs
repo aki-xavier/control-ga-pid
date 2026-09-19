@@ -9,7 +9,7 @@
 /// ceilings are different quantities: 0.2/dt is the same for every task at a given period, the budget's is the
 /// task's own step against its torque ceiling. It deliberately offers no actuator ceiling: both candidates for
 /// one were falsified by measurement, so what bounds the step is a property of the loop's own torque
-/// distribution, which has to be measured — simu's examples/class_budget_probe.rs locates the boundary.
+/// distribution, which has to be measured — ../z1-arm/examples/class_budget_probe.rs locates the boundary.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MotionWindow {
     pub zeta: f64,

@@ -1,8 +1,8 @@
 // closed_loop.rs — the loop against a plant, with no engine anywhere. This is the coverage the
 // module could not have while it lived inside `simu`: every closed-loop test there needed a
 // `CEnginePlant`, and the crate linked the shim unconditionally. The plant is `common/mod.rs`, which
-// is the same ODE `simu` integrates with the engine's mirror left out, so these are measurements and
-// not smoke tests — the first one is exact arithmetic.
+// is the same ODE the products' plants integrate, with the engine's mirror left out, so these are
+// measurements and not smoke tests — the first one is exact arithmetic.
 
 mod common;
 
@@ -110,8 +110,9 @@ fn a_setpoint_step_settles_on_its_target() {
 /// THE EFFERENCE COPY PAIRS THE COMMAND WITH WHAT THE PLANT APPLIED, and on an ideal plant the
 /// difference is zero: the loop reconstructs the applied torque from the velocity the integrator
 /// produced, and that reconstruction is the command it sent. This is the first test `Efference` has
-/// had as a reader — `simu`'s own note on `PlaneTaskLoop.eff` records that it has no reader in
-/// `src/` — and it doubles as the pin on `take_efference`'s inverse of the plant's step.
+/// had as a reader — the arm's own note on `PlaneTaskLoop.eff` records that, in `src/`, nothing
+/// computes a number in the law from it — and it doubles as the pin on `take_efference`'s inverse of
+/// the plant's step.
 #[test]
 fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
     let (mut plant, mut lp) = arm(15.0, 0.9);
