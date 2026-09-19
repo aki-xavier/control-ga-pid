@@ -1,14 +1,6 @@
-// plane_mode_probe.rs — GA_PID_AUDIT.md #19's premise measurement: the loop's metric K = Lambda
-// diag(wn^2 soft), how coupled it is, and WHEN per-plane placement stops being conservative. A probe,
-// not a contract; engine-free (URDF chain + PGA dynamics).
-//
-//   K is symmetric — the only stiffness an environment can be offered without being fed energy on
-//   closed paths — exactly when the diagonal is uniform across planes, and the shipped Poles paths
-//   are all uniform. Measured: (1) Lambda's coupling and per-block spectra at three poses, the full
-//   6x6 unit-MIXED; (2) the identity K = wn^2 Lambda; (3) the defect when the poles part —
-//   wn = [30, 15, 15, 15, 15, 15] makes K asymmetric, and the asymmetry IS an energy pump of pi r^2 (K_ij - K_ji) per lap.
-//
-// Run:  cargo run --release --example plane_mode_probe
+// Probe of K = Lambda diag(wn^2): the coupling, and when per-plane placement stops being safe.
+// K is symmetric only while the wn^2 diagonal is uniform; a split makes it an energy pump.
+// Run: cargo run --release --example plane_mode_probe
 
 use control_ga_pid::inertia::task_space_inertia;
 use control_math::mat::Mat;
@@ -45,7 +37,6 @@ fn max_asym(m: &Mat) -> f64 {
     mx
 }
 
-/// jacobi_eig: eigenvalues of a symmetric matrix by cyclic Jacobi sweeps. Probe-local: nothing in the law diagonalizes Lambda — the loop CANCELS it (f = Lambda num makes the task acceleration num exactly).
 fn jacobi_eig(a: &Mat) -> Vec<f64> {
     let n = a.rows;
     let mut d: Vec<f64> = (0..n * n).map(|k| a.at(k / n, k % n)).collect();
@@ -139,7 +130,7 @@ fn report_pose(name: &str, lam: &Mat) {
 }
 
 fn main() {
-    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("z1 chain parses");
+    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("the chain parses");
     let mut pdyn = PgaDynamicsModel::new(chain.clone());
 
     let home = home_q();

@@ -1,5 +1,4 @@
-// core.rs — unit tests for the plane_design / least-squares / keepout building blocks of the GA-PID
-// core. The math half lives in control-math's own tests/math.rs, which is that layer's home.
+// Unit tests for the plane-design, least-squares and keep-out building blocks.
 
 use control_ga_pid::box_ko::BoxKo;
 use control_ga_pid::budget::{budget_verdict, MotionBudget};
@@ -33,7 +32,6 @@ fn mul_and_vec() {
 
 #[test]
 fn quat_rotvec_between_pi() {
-    // rotation of pi about z maps to the rotation vector pi*z
     let q = Quat {
         w: 0.0,
         x: 0.0,
@@ -60,7 +58,7 @@ fn plane_design_gains() {
 
 #[test]
 fn plane_design_integral_from_time_constant() {
-    // alpha = kp / Ti = wn^2 / Ti; a non-positive Ti switches the integral off
+    // a non-positive Ti switches the integral off
     assert!((alpha_for_ti(15.0, 1.0) - 225.0).abs() < 1e-12);
 
     assert!((alpha_for_ti(15.0, 2.0) - 112.5).abs() < 1e-12);
@@ -73,7 +71,7 @@ fn plane_design_integral_from_time_constant() {
 
 #[test]
 fn zeta_from_overshoot_hits_the_textbook_points() {
-    // inverted relation: a zero budget is deadbeat (zeta = 1), 16.3 percent is the classic 0.5
+    // inverted relation: a zero budget is deadbeat (zeta = 1)
     assert!((zeta_from_overshoot(0.0) - 1.0).abs() < 1e-15);
     let z = zeta_from_overshoot((-(PI * 0.5) / (1.0f64 - 0.25).sqrt()).exp());
     assert!(
@@ -85,8 +83,7 @@ fn zeta_from_overshoot_hits_the_textbook_points() {
 
 #[test]
 fn task_class_derives_the_motion_tier() {
-    // the class fixes the spec and the spec derives the gains: a tighter overshoot budget buys
-    // damping, a shorter settling requirement buys bandwidth, the integral tier the disturbance class
+    // tighter Mp buys damping, shorter Ts buys bandwidth
     let ph = class_precision_hand();
     let fs = class_fast_swing();
     let wp = ph.window(1e-3);
@@ -124,7 +121,6 @@ fn damped_least_squares() {
     assert!((dq[0] - 2.0).abs() < 1e-12);
     assert!((dq[1] - 3.0).abs() < 1e-12);
     assert!(dq[2].abs() < 1e-12);
-    // Lam damped: full-rank 3x3 with ridge regularization; dq = (J'J+li)-1 J'e.
     let j2 = Mat::eye(3);
     let b2 = DampedLstsq::new(3, 0.1);
     let dq2 = b2.solve(&j2, &[1.0, 0.0, 0.0]);
@@ -159,7 +155,7 @@ fn keepout_plane_and_box() {
     });
     assert!((pl.signed_dist(Vec3::new(0.0, 2.0, 0.0)) - 1.0).abs() < 1e-12);
     assert!((pl.signed_dist(Vec3::new(0.0, 0.5, 0.0)) + 0.5).abs() < 1e-12);
-    // `box` is a Rust keyword, so the local is renamed; the value is the same
+    // `box` is a Rust keyword, so the local is renamed
     let bx = Keepout::Box(BoxKo {
         lo: Vec3::default(),
         hi: Vec3::new(1.0, 1.0, 1.0),
@@ -179,7 +175,6 @@ fn keepout_shift_and_safe_point() {
         Keepout::Sphere(s) => assert!((s.c.x - 3.0).abs() < 1e-12),
         _ => panic!("shift changed the variant"),
     }
-    // a goal on the far side of a big sphere is pulled to the free side
     let big = Keepout::Sphere(SphereKo {
         c: Vec3::new(0.0, 0.0, 0.0),
         r: 1.0,
@@ -195,7 +190,7 @@ fn keepout_shift_and_safe_point() {
         z: 0.0,
     };
     let s = big.safe_point(cur, goal, 0.05);
-    assert!(s.x < 0.0); // stays on the near (free) side
+    assert!(s.x < 0.0);
     match big {
         Keepout::Sphere(sp) => assert!(s.sub(sp.c).norm() > 1.0 + 0.05 - 1e-9),
         _ => panic!("not a sphere"),
@@ -221,13 +216,11 @@ fn task_avoidance_projection() {
     };
     let (safe, dist, active) = t.safe_target(cur, goal, &[ko], 0.05);
     assert!(active);
-    assert!(dist < 0.0); // segment crosses the keep-out
-    assert!(safe.x < 0.01); // projected back to the free side
+    assert!(dist < 0.0);
+    assert!(safe.x < 0.01);
 }
 
-/// The keep-out escape an inflated shape asks for — the one keepout.rs entry point this file did not
-/// otherwise cover. The link Jacobian against finite differences of FK lives in
-/// `../control-model/tests/urdf.rs`.
+/// The keep-out escape an inflated shape asks for.
 #[test]
 fn keepout_escape_inflated() {
     let c = Vec3::new(0.0, 0.0, 0.0);
@@ -237,14 +230,12 @@ fn keepout_escape_inflated() {
     assert!(e.x > 0.0);
     let e2 = k.escape(Vec3::new(0.2, 0.0, 0.0), 0.045, 0.005);
     assert!(e2.norm() < 1e-12);
-    // plane: n = +x, wall at x = 0.30, p at x = 0.20 -> push 0.15
     let pk = Keepout::Plane(PlaneKo {
         n: Vec3::new(1.0, 0.0, 0.0),
         p: Vec3::new(0.3, 0.0, 0.0),
     });
     let e3 = pk.escape(Vec3::new(0.20, 0.0, 0.0), 0.045, 0.005);
     assert!((e3.x - 0.15).abs() < 1e-9);
-    // box: point inside the inflated box -> nonzero push to margin beyond wall
     let bk = Keepout::Box(BoxKo {
         lo: Vec3::new(0.15, -0.03, -0.03),
         hi: Vec3::new(0.20, 0.03, 0.03),
@@ -253,10 +244,7 @@ fn keepout_escape_inflated() {
     assert!(e4.norm() > 0.005);
 }
 
-/// THE BUDGET'S BINDING CHANNEL NAMES A JOINT, NOT A SLOT: `motion_budget` scans joints by index
-/// and keeps answering "joint {i}" (../z1-arm/tests/bench_sims.rs pins that reading), while a caller
-/// that HAS the model's names resolves them through `with_names`. Pinned: the resolved name, the
-/// kept fallback, the non-answer for a budget that binds nothing, and no re-resolution.
+/// The binding channel resolves through the model's names; fallback and "none" survive.
 #[test]
 fn the_budget_reads_the_binding_joint_through_the_models_names() {
     let index_form = MotionBudget {
@@ -269,7 +257,6 @@ fn the_budget_reads_the_binding_joint_through_the_models_names() {
     };
     assert_eq!(index_form.binding_index(), Some(1));
     assert_eq!(index_form.binding, "joint 1", "the unnamed reading moved");
-    // the model's own names, in the scan's own order: slot 1 is the second joint
     let names = vec![
         "joint1".to_string(),
         "joint2".to_string(),
@@ -286,8 +273,6 @@ fn the_budget_reads_the_binding_joint_through_the_models_names() {
     assert_eq!(named.names, names, "the names did not stay on the value");
     assert_eq!(named.feasible, index_form.feasible, "the verdict moved");
     assert_eq!(named.binding_index(), None, "a resolved name re-resolved");
-    // a list too short for the index keeps the scan's own words, and a budget that binds nothing
-    // is not an index at all
     let short = index_form.clone().with_names(&["joint1".to_string()]);
     assert_eq!(short.binding, "joint 1");
     let none = MotionBudget {
@@ -298,16 +283,12 @@ fn the_budget_reads_the_binding_joint_through_the_models_names() {
     assert_eq!(none.with_names(&names).binding, "none");
 }
 
-/// The Z1 at home as the arm's own run path sees it (../z1-arm/src/bench/bench_sims.rs reads these
-/// terms off a model-only plant): the PGA model and chain, engine-free, plus the identified gravity
-/// stiffness the bench's `joint_k_eff` takes by central differences.
-fn z1_home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
-    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("the Z1 chain");
+/// The chain at home: M, tip Jacobian, gravity, gravity stiffness, joint names.
+fn home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
+    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("the chain parses");
     let mut pdyn = PgaDynamicsModel::new(chain.clone());
     let q = home_q();
     let m = pdyn.mass_matrix(&q);
-    // the tip Jacobian through the chain's own FK, which is the frame set the model's cached
-    // `frames` builds (pga_dynamics.rs) and therefore the Jacobian the bench's plant reports
     let (o, r) = chain.fk(&q);
     let tip = chain.tip_pose(&o, &r).0;
     let j = chain.point_jacobian(&o, &r, tip);
@@ -328,18 +309,10 @@ fn z1_home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
     (m, j, g, k_eff, chain.joint_names.clone())
 }
 
-/// THE ARM'S OWN RUN PATH ASKS THE BUDGET, AND THE VERDICT NAMES THE JOINT: the arm has no runtime
-/// (the arm's benches in `src/bench/` and its examples are the run path), so the caller is that
-/// crate's `bench_sims::sim_setpoint_taskloop`, which asks this module's `budget_verdict` before its
-/// first command and RECORDS it, never enforced (the legs' guard ships off, the arm has no guard
-/// switch).
-///
-/// The reading pinned here is the T5 arm's: a 0.25 m step with the study's [30, 6, ...] N.m ceiling
-/// saturates the SECOND joint and the verdict names it, while the shipped T1 arm states no ceiling,
-/// so nothing binds and the same design sits inside its window.
+/// The verdict names the binding joint and is recorded, never enforced.
 #[test]
-fn the_arms_run_path_records_the_verdict_and_names_the_binding_joint() {
-    let (m, j, g, k_eff, names) = z1_home_model();
+fn the_verdict_is_recorded_and_names_the_binding_joint() {
+    let (m, j, g, k_eff, names) = home_model();
     let lim = vec![30.0, 6.0, 30.0, 30.0, 30.0, 30.0];
     let fast = budget_verdict(
         &m,
@@ -352,7 +325,6 @@ fn the_arms_run_path_records_the_verdict_and_names_the_binding_joint() {
         15.0,
         0.9,
     );
-    // the design's own settling requirement is the floor: Ts = 4/(zeta wn) inverts back to wn
     assert!(
         (fast.wn_lo - 15.0).abs() < 1e-9,
         "the floor is {} against the design's own 15",
@@ -370,11 +342,10 @@ fn the_arms_run_path_records_the_verdict_and_names_the_binding_joint() {
     );
     assert!(
         !fast.feasible,
-        "the saturated T5 arm reads feasible: wn_hi {} against wn_lo {}",
+        "the saturated design reads feasible: wn_hi {} against wn_lo {}",
         fast.wn_hi, fast.wn_lo
     );
-    // the shipped T1 arm: no ceiling stated, so nothing binds and the design's window is open
-    let t1 = budget_verdict(
+    let unclamped = budget_verdict(
         &m,
         &j,
         &g,
@@ -385,10 +356,10 @@ fn the_arms_run_path_records_the_verdict_and_names_the_binding_joint() {
         15.0,
         0.9,
     );
-    assert!(t1.feasible);
-    assert_eq!(t1.binding, "none");
+    assert!(unclamped.feasible);
+    assert_eq!(unclamped.binding, "none");
     println!(
-        "arm budget: T5 binding {} at wn in [{:.1}, {:.1}] (feasible {}); T1 binding {} (feasible {})",
-        fast.binding, fast.wn_lo, fast.wn_hi, fast.feasible, t1.binding, t1.feasible
+        "budget: saturated binding {} at wn in [{:.1}, {:.1}] (feasible {}); unclamped binding {} (feasible {})",
+        fast.binding, fast.wn_lo, fast.wn_hi, fast.feasible, unclamped.binding, unclamped.feasible
     );
 }

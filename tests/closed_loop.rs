@@ -1,8 +1,4 @@
-// closed_loop.rs — the loop against a plant, with no engine anywhere. This is the coverage the
-// module could not have while it lived inside `simu`: every closed-loop test there needed a
-// `CEnginePlant`, and the crate linked the shim unconditionally. The plant is `common/mod.rs`, which
-// is the same ODE the products' plants integrate, with the engine's mirror left out, so these are
-// measurements and not smoke tests — the first one is exact arithmetic.
+// The loop against `common/mod.rs`'s plant: the same ODE an engine-backed plant integrates.
 
 mod common;
 
@@ -16,10 +12,8 @@ use control_model::urdf::{home_q, urdf_path};
 
 const DT: f64 = 1e-3;
 
-/// arm is the Z1 at home with the loop's `damp` set to the chain's own joint damping — the pair the
-/// efference copy's contract names (the same dt, one plant step per call, and the plant's viscous
-/// damping equal to the loop's `damp`).
-fn arm(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
+/// Chain at home; the loop's `damp` is the chain's own joint damping.
+fn chain_home(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
     let mut plant = ChainPlant::new(&urdf_path(), "link06", DT);
     plant.set_state(&home_q(), &[0.0; 6]);
     let damp = plant.chain.dampings.clone();
@@ -40,15 +34,12 @@ fn arm(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
     (plant, lp)
 }
 
-/// THE POLES READING IS THE METRIC APPLIED TO THE LAW, and the command is otherwise only the plant's
-/// own model terms: tau = J' Lambda num + C q_dot + g, with num_i = wn^2 e_i on a rest state. The
-/// body of this check is the crate's own `task_space_inertia` re-deriving Lambda from the plant's M
-/// and J, so a wrong metric, a wrong plane map or a missing feedforward each move the answer.
+/// tau = J' Lambda num + C q_dot + g, with Lambda re-derived by `task_space_inertia`.
 #[test]
 fn the_poles_command_is_the_metric_applied_to_the_law() {
-    let (mut plant, mut lp) = arm(15.0, 0.9);
+    let (mut plant, mut lp) = chain_home(15.0, 0.9);
     let (cur, cq) = plant.task_pose();
-    // a 10 mm step in z is the whole error: the other two planes are told to stay where they are
+    // only z moves; the other planes are commanded to hold
     let target = cur.add(Vec3::new(0.0, 0.0, 0.01));
 
     let tau = lp.step(&mut plant, target, cq, DT, &[]);
@@ -70,7 +61,6 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
             tau[i]
         );
     }
-    // and the step really is the whole of the demand: a zero step asks for no plane torque at all
     let (cur2, _) = plant.task_pose();
     let tau0 = lp.step(&mut plant, cur2, cq, DT, &[]);
     for i in 0..6 {
@@ -82,12 +72,10 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
     }
 }
 
-/// The closed loop settles: a 3-plane setpoint on a 6-joint arm, driven only by the law and the
-/// plant's own model terms, reaches its target and does so without leaving the neighbourhood it was
-/// given. The threshold is the tip's position, not a gain: 0.5 mm on a 50 mm step.
+/// A 3-plane setpoint reaches its target, and the transient stays bounded.
 #[test]
 fn a_setpoint_step_settles_on_its_target() {
-    let (mut plant, mut lp) = arm(15.0, 0.9);
+    let (mut plant, mut lp) = chain_home(15.0, 0.9);
     let (cur, cq) = plant.task_pose();
     let target = cur.add(Vec3::new(0.05, 0.03, -0.02));
 
@@ -107,15 +95,10 @@ fn a_setpoint_step_settles_on_its_target() {
     );
 }
 
-/// THE EFFERENCE COPY PAIRS THE COMMAND WITH WHAT THE PLANT APPLIED, and on an ideal plant the
-/// difference is zero: the loop reconstructs the applied torque from the velocity the integrator
-/// produced, and that reconstruction is the command it sent. This is the first test `Efference` has
-/// had as a reader — the arm's own note on `PlaneTaskLoop.eff` records that, in `src/`, nothing
-/// computes a number in the law from it — and it doubles as the pin on `take_efference`'s inverse of
-/// the plant's step.
+/// The efference copy reconstructs the applied torque: zero residual on an ideal plant.
 #[test]
 fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
-    let (mut plant, mut lp) = arm(15.0, 0.9);
+    let (mut plant, mut lp) = chain_home(15.0, 0.9);
     let (cur, cq) = plant.task_pose();
     let target = cur.add(Vec3::new(0.02, 0.0, -0.03));
 
@@ -124,7 +107,7 @@ fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
         let tau = lp.step(&mut plant, target, cq, DT, &[]);
         plant.step(&tau, 1);
     }
-    // the first tick has no earlier command to pair, so the copy holds one sample per tick after it
+    // the first tick has no earlier command to pair
     assert_eq!(
         lp.eff.samples,
         ticks - 1,

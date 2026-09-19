@@ -1,8 +1,4 @@
-// task_frame.rs — GA_PID_AUDIT.md #19's pins: the task frame is world axes ABOUT THE TIP,
-// [v; w] order, J's linear block the tip's point Jacobian (pinned in
-// `../control-model/tests/urdf.rs`). Lambda is strongly coupled (cross-block correlation 0.80 at home,
-// 0.996 bent), so "per-mode" placement would be a different design; K = wn^2 Lambda is symmetric only
-// under the shipped uniform poles.
+// The task frame is world axes about the tip, [v; w]; Lambda is strongly coupled across blocks.
 
 use control_ga_pid::inertia::task_space_inertia;
 use control_math::mat::Mat;
@@ -17,8 +13,8 @@ fn lam_at(chain: &control_model::urdf::UrdfChain, pdyn: &mut PgaDynamicsModel, q
     task_space_inertia(&m, &j, chain.n)
 }
 
-fn z1() -> (control_model::urdf::UrdfChain, PgaDynamicsModel) {
-    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("z1 chain parses");
+fn home_chain() -> (control_model::urdf::UrdfChain, PgaDynamicsModel) {
+    let chain = load_urdf_chain(&urdf_path(), "link00", "link06").expect("the chain parses");
     let pdyn = PgaDynamicsModel::new(chain.clone());
     (chain, pdyn)
 }
@@ -55,7 +51,7 @@ fn max_asym(m: &Mat) -> f64 {
 
 #[test]
 fn lambda_is_strongly_coupled_so_per_mode_would_be_a_different_design() {
-    let (chain, mut pdyn) = z1();
+    let (chain, mut pdyn) = home_chain();
     let home = home_q();
     let lam = lam_at(&chain, &mut pdyn, &home);
     let cross = frob_block(&lam, 0, 3, 3, 6)
@@ -78,9 +74,8 @@ fn lambda_is_strongly_coupled_so_per_mode_would_be_a_different_design() {
 
 #[test]
 fn the_shipped_uniform_poles_present_a_conservative_stiffness() {
-    let (chain, mut pdyn) = z1();
+    let (chain, mut pdyn) = home_chain();
     let lam = lam_at(&chain, &mut pdyn, &home_q());
-    // every shipped Poles construction broadcasts one (wn, zeta), so K = wn^2 Lambda
     let k = lam.scale(15.0 * 15.0);
     let rel = max_asym(&k) / max_abs(&k);
     assert!(
@@ -89,9 +84,10 @@ fn the_shipped_uniform_poles_present_a_conservative_stiffness() {
     );
 }
 
+/// Parting the poles makes K asymmetric, and the antisymmetric part is an energy pump.
 #[test]
 fn the_moment_the_poles_part_the_stiffness_becomes_an_energy_pump() {
-    let (chain, mut pdyn) = z1();
+    let (chain, mut pdyn) = home_chain();
     let lam = lam_at(&chain, &mut pdyn, &home_q());
     let mut wn2 = Mat::zeros(6, 6);
     let split = [30.0, 15.0, 15.0, 15.0, 15.0, 15.0];
@@ -104,8 +100,6 @@ fn the_moment_the_poles_part_the_stiffness_becomes_an_energy_pump() {
         (rel - 0.1022).abs() < 0.002,
         "a 2:1 split must go ~10 percent asymmetric, got {rel}"
     );
-    // the antisymmetric part is an energy pump: work per lap = pi r^2 (K_ij - K_ji),
-    // strongest between planes 0 and 2
     let pump = (k.at(0, 2) - k.at(2, 0)).abs();
     assert!(
         (pump - 201.9345).abs() < 0.5,

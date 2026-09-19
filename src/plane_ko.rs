@@ -1,5 +1,4 @@
-// plane_ko.rs — PlaneKo, the half-space keep-out primitive (free side n.(x - p) > 0), part of
-// keepout.rs's sum type. Readouts normalize n; a degenerate normal gives no constraint, not NaN.
+// plane_ko.rs — PlaneKo half-space keep-out: free side is n.(x - p) > 0; a degenerate normal gives no constraint.
 
 use control_math::vec3::Vec3;
 

@@ -1,6 +1,4 @@
-// escape.rs — TaskAvoidance, the reference-shaping (reactive avoidance) layer against convex
-// keep-outs: the controller is task-direct, so the goal is projected out of the keep-outs each step
-// and only the safe goal reaches the law; safe_target_lead evaluates each keep-out at c + vc * tau.
+// escape.rs — TaskAvoidance reference shaping: only the safe goal reaches the law; lead evaluates each keep-out at c + vc * tau.
 
 use crate::keepout::Keepout;
 use crate::sphere_ko::zero_sphere;
@@ -10,7 +8,7 @@ use control_math::vec3::Vec3;
 pub struct TaskAvoidance;
 
 impl TaskAvoidance {
-    /// safe_target projects goal out of keepouts; returns (safe goal, min segment distance, active).
+    /// Projects goal out of keepouts; returns (safe goal, min segment distance, active).
     pub fn safe_target(
         &self,
         cur: Vec3,

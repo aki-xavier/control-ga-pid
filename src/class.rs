@@ -1,5 +1,4 @@
-// class.rs — TaskClass, what a task class actually fixes: the spec from which the gains follow
-// (storing the gains themselves per class is not supported by measurement); window/spec resolve it.
+// class.rs — TaskClass: the spec a task class fixes, from which window/spec derive the gains.
 
 use crate::design::{wn_for_settling, zeta_from_overshoot};
 use crate::spec::TaskSpec;
@@ -20,12 +19,11 @@ pub struct TaskClass {
 }
 
 impl TaskClass {
-    /// window solves the bounds the theory supports at a control period and recommends the floor rather
-    /// than the ceiling: near the boundary a stiffer loop can lose a target it would otherwise reach.
+    /// Bounds the theory supports at control period dt; recommends the settling floor, not the ceiling.
     pub fn window(&self, dt: f64) -> MotionWindow {
         let zeta = zeta_from_overshoot(self.mp);
         let lo = wn_for_settling(zeta, self.ts);
-        // wn * dt = 0.2 keeps the discrete poles well inside the unit circle and the velocity estimate usable.
+        // wn * dt = 0.2 keeps the discrete poles inside the unit circle.
         let hi = if dt > 0.0 { 0.2 / dt } else { 0.0 };
         let ok = lo > 0.0 && lo <= hi;
         let mut why = String::new();
@@ -42,7 +40,7 @@ impl TaskClass {
         }
     }
 
-    /// spec resolves the class at its window point; an empty window comes back zeroed, so check feasible first.
+    /// Resolves the class at its window point; an infeasible window comes back zeroed (check feasible first).
     pub fn spec(&self, dt: f64) -> TaskSpec {
         let w = self.window(dt);
         TaskSpec {
@@ -55,7 +53,7 @@ impl TaskClass {
     }
 }
 
-/// class_precision_hand is the fine-manipulation class: tight overshoot (contact force scales with it), integral removes drift.
+/// Fine manipulation: tight overshoot, integral on.
 pub fn class_precision_hand() -> TaskClass {
     TaskClass {
         mp: 0.02,
@@ -66,7 +64,7 @@ pub fn class_precision_hand() -> TaskClass {
     }
 }
 
-/// class_fast_swing is the fast-motion class: overshoot tolerable, short settling, no integral (windup), feedforward.
+/// Fast motion: overshoot tolerated, short settling, no integral, feedforward on.
 pub fn class_fast_swing() -> TaskClass {
     TaskClass {
         mp: 0.10,

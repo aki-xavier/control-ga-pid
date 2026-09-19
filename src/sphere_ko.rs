@@ -1,5 +1,4 @@
-// sphere_ko.rs — SphereKo, the spherical keep-out primitive with its avoidance sub-target
-// shaping. Pure Euclidean geometry, no control dependency; part of the Keepout sum type (keepout.rs).
+// sphere_ko.rs — SphereKo, the spherical keep-out primitive; part of the Keepout sum type.
 
 use control_math::vec3::Vec3;
 
@@ -23,7 +22,7 @@ impl SphereKo {
             bt = u.perp();
         }
         if l <= rb {
-            // inside the inflated sphere: creep toward the free side.
+            // inside the inflated sphere: creep toward the free side
             return self
                 .c
                 .add(u.scale(rb * 0.08f64.cos()))

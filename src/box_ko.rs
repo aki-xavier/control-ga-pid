@@ -1,5 +1,4 @@
-// box_ko.rs — BoxKo, the axis-aligned box keep-out [lo, hi], with its avoidance
-// sub-target shaping and binding-face readout. Pure geometry; part of the Keepout sum type.
+// box_ko.rs — BoxKo, the axis-aligned box keep-out [lo, hi]; part of the Keepout sum type.
 
 use control_math::vec3::Vec3;
 
@@ -31,7 +30,7 @@ impl BoxKo {
         ctr.add(dir.scale(ext + margin))
     }
 
-    /// binding_face is the outward normal and face point of the least-penetrating box wall at p.
+    /// Outward normal and face point of the least-penetrating box wall at p.
     pub fn binding_face(&self, p: Vec3) -> (Vec3, Vec3) {
         let norms = [
             Vec3::new(1.0, 0.0, 0.0),
@@ -60,7 +59,7 @@ impl BoxKo {
     }
 }
 
-/// box_seg_dist samples the segment at 41 points: (min signed distance, point at argmin).
+/// Segment sampled at 41 points: (minimum signed distance, point at argmin).
 pub(crate) fn box_seg_dist(a: Vec3, b: Vec3, k: &BoxKo) -> (f64, Vec3) {
     let mut best_sd = 1e30;
     let mut best_q = a;

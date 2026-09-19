@@ -1,16 +1,11 @@
-// budget.rs — MotionBudget and the demand scan that produces it: where the motion tier's numbers come
-// from. A bare sweep cannot choose (wn, zeta), so a set of budgets does: overshoot `zeta >= |ln Mp| / sqrt(pi^2
-// + ln^2 Mp)`, settling `wn >= 4/(zeta Ts)`, sampling `wn * dt << 1`, integral, and the per-joint ACTUATOR
-// inequality `|g_i + wn^2 e (J' Lambda u)_i| <= u_lim_i`, which turns the task's step into a ceiling on wn.
+// budget.rs — MotionBudget and the demand scan; the actuator budget |g_i + wn^2 (J' Lambda u)_i| <= u_lim_i bounds wn.
 
 use crate::design::{wn_for_settling, zeta_from_overshoot};
 use control_math::mat::Mat;
 use control_math::lstsq::DampedLstsq;
 use std::f64::consts::PI;
 
-/// MotionBudget is the window the budgets leave open; `feasible` is false when wn_hi < wn_lo (the actuators
-/// cannot deliver the settling time the task asks, and no gain choice repairs it). Unlike MotionWindow
-/// (window.rs), its ceiling is the actuators' and not the sampling bound 0.2/dt.
+/// The window the budgets leave open: wn_lo from settling, wn_hi from the actuator scan; feasible = wn_hi >= wn_lo.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MotionBudget {
     pub zeta_lo: f64,
@@ -18,14 +13,12 @@ pub struct MotionBudget {
     pub wn_hi: f64,
     pub binding: String,
     pub feasible: bool,
-    /// names[i] is joint i's own name in the chain order the scan indexes; EMPTY IS THE SHIPPED READING because
-    /// the scan works by index — `with_names` is where a caller that has the model puts its names in.
+    /// names[i] is joint i's name in the scan's chain order; empty until `with_names` fills it in.
     pub names: Vec<String>,
 }
 
 impl MotionBudget {
-    /// with_names resolves the binding channel through a model's own joint names in the scan's chain order; an
-    /// index past the list, or a binding of "none", keeps the form it had. The names are kept on the value too.
+    /// Resolves the binding channel through a model's own joint names; an out-of-range index or "none" is kept.
     pub fn with_names(mut self, names: &[String]) -> MotionBudget {
         if let Some(i) = self.binding_index() {
             if let Some(n) = names.get(i) {
@@ -36,17 +29,13 @@ impl MotionBudget {
         self
     }
 
-    /// binding_index is the joint the binding channel names (the scan's own "joint {i}"), or None when nothing
-    /// binds or the name has already been resolved through `with_names`.
+    /// Index the binding channel names, or None when nothing binds or the name is already resolved.
     pub fn binding_index(&self) -> Option<usize> {
         self.binding.strip_prefix("joint ")?.parse().ok()
     }
 }
 
-/// step_demand returns the per-joint peak torque the law commands at the step instant as a fraction of u_lim,
-/// plus the joint that owns the worst ratio: dq = J+ e (clipped by max_step), scaled by kappa_p = wn^2 - k_eff,
-/// then M (kappa_p .* dq) + g — the law's own demand, not the operational-space shortcut tau = J' Lambda wn^2 e.
-// The demand's inputs stay separate arguments; the doc above names each.
+/// Per-joint peak torque at the step instant as a fraction of u_lim, plus the joint owning the worst ratio.
 #[allow(clippy::too_many_arguments)]
 pub fn step_demand(
     m: &Mat,
@@ -61,7 +50,7 @@ pub fn step_demand(
 ) -> (f64, String) {
     let nu = j.rows;
     let nj = j.cols;
-    // damped least squares: dq = J' (J J' + ridge I)^-1 e, the right-inverse ridge form used throughout the core
+    // damped least squares dq = J' (J J' + ridge I)^-1 e
     let dq_full = DampedLstsq::new(nu, ridge).solve_right(j, step);
     let mut dq = vec![0.0; nj];
     for k in 0..nj {
@@ -101,8 +90,7 @@ pub fn step_demand(
     (worst, owner)
 }
 
-/// motion_budget solves the window for a step, scanning wn so the ceiling uses the same demand estimate the law
-/// would produce rather than an analytic shortcut through wn^2.
+/// Solves the window for a step, scanning wn with the law's own demand estimate.
 #[allow(clippy::too_many_arguments)]
 pub fn motion_budget(
     m: &Mat,
@@ -136,14 +124,11 @@ pub fn motion_budget(
         wn_hi: hi,
         binding: bind,
         feasible: hi > 0.0 && hi >= lo,
-        // the scan names joints by index and this module holds no model; `with_names` is where names come in
         names: Vec::new(),
     }
 }
 
-/// budget_verdict is the arm bench's caller of the motion budget: the feasibility verdict for a commanded
-/// tip step, taken from the model the run will drive before its first command. The window's floor is the
-/// design's own (wn, zeta) pair; the verdict is RECORDED, not enforced, and no number in the run comes from it.
+/// Feasibility verdict for a commanded tip step from the model a run will drive; RECORDED, not enforced.
 #[allow(clippy::too_many_arguments)]
 pub fn budget_verdict(
     m: &Mat,
@@ -161,7 +146,7 @@ pub fn budget_verdict(
     motion_budget(m, j, g, k_eff, u_lim, step, mp, ts, 1e-6, 0.2).with_names(names)
 }
 
-/// mp_from_zeta is the standard second-order overshoot relation that `design::zeta_from_overshoot` inverts; 0.0 at or past critical damping.
+/// Standard second-order overshoot relation; 0.0 at or past critical damping.
 fn mp_from_zeta(zeta: f64) -> f64 {
     if zeta >= 1.0 {
         return 0.0;

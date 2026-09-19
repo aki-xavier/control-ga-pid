@@ -1,11 +1,8 @@
-// recruitment.rs — minimal-authority-first allocation (SPINAL_PROGRAM.md #8): channels fill in
-// ascending cost order, each up to its own capacity, so below the smallest channel's capacity only
-// that one acts; the escape is the price table `weights()`, whose uniform entry is exactly the
-// shipped solve — the identity the whole channel rests on.
+// Minimal-authority-first allocation; uniform prices make `weights()` exactly the shipped solve.
 
 use control_ga_pid::recruit::Recruitment;
 
-/// The small unit acts first; the big one is silent until the demand outruns the small one's capacity.
+/// Small units fill first, up to their capacity; ties break deterministically.
 #[test]
 fn the_allocation_fills_the_smallest_units_first() {
     let mut r = Recruitment::new(vec![10.0, 1.0, 5.0]);
@@ -21,7 +18,6 @@ fn the_allocation_fills_the_smallest_units_first() {
     for d in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert_eq!(r.allocate(d, &caps), vec![0.0; 3], "demand {d}");
     }
-    // the order is deterministic on ties (a machine's runs have to be reproducible)
     let t = Recruitment::new(vec![1.0; 4]);
     assert_eq!(t.order(), vec![0, 1, 2, 3]);
     let mut prev = vec![0.0; 3];
@@ -37,8 +33,7 @@ fn the_allocation_fills_the_smallest_units_first() {
     }
 }
 
-/// A joint's own effort limit is the size of its unit, and the weights are the mean over the prices
-/// (so uniform prices are exactly 1); a broken price is a price of 1, not a NaN weight.
+/// Weights are the mean price over each price; a broken price counts as 1.
 #[test]
 fn the_weights_are_the_mean_price_over_each_price() {
     let off = Recruitment::from_limits(&[30.0, 60.0, 30.0]);
@@ -46,7 +41,6 @@ fn the_weights_are_the_mean_price_over_each_price() {
     let mut on = off.clone();
     on.on = true;
     let w = on.weights();
-    // mean price 40 against [30, 60, 30]
     assert!((w[0] - 40.0 / 30.0).abs() < 1e-12);
     assert!((w[1] - 40.0 / 60.0).abs() < 1e-12);
     for i in 0..3 {

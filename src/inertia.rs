@@ -1,20 +1,18 @@
-// inertia.rs — the operational-space inertia Lambda = (J M^-1 J^T)^-1 and the per-plane
-// quantities derived from it (the unified loop and the budget solver both shape with it), plus the
-// passivity floor, a pure scalar law testable without a plant.
+// inertia.rs — Lambda = (J M^-1 J^T)^-1, the per-plane quantities derived from it, and the passivity floor.
 
 use control_math::mat::Mat;
 
-/// effective_task_inertia is lambda_x = (J M^-1 J^T)^-1 of the task frame.
+/// lambda_x = (J M^-1 J^T)^-1 of the task frame.
 pub fn effective_task_inertia(m: &Mat, j: &Mat, n: usize) -> Mat {
     task_space_inertia(m, j, n)
 }
 
-/// effective_task_mass: the diagonal of lambda_x as per-plane masses (result length = Jacobian rows).
+/// The diagonal of lambda_x as per-plane masses (result length = Jacobian rows).
 pub fn effective_task_mass(m: &Mat, j: &Mat, n: usize) -> Vec<f64> {
     effective_task_inertia(m, j, n).diag()
 }
 
-/// passivity_floor is the damping a passive port needs, D >= 2 sqrt(K M), returned as max(D, floor).
+/// The damping a passive port needs: D >= 2 sqrt(K M), returned as max(D, floor).
 pub fn passivity_floor(k: f64, d: f64, mass: f64) -> f64 {
     if mass <= 1e-12 || k <= 0.0 {
         return d;
@@ -27,9 +25,8 @@ pub fn passivity_floor(k: f64, d: f64, mass: f64) -> f64 {
     }
 }
 
-/// task_space_inertia is Lambda = (J M^-1 J^T)^-1 for an m-row task Jacobian: M^-1 by n solves, the
-/// m x m product, then its inverse by m solves. The full matrix is needed — on the Z1 the
-/// off-diagonal terms are as large as the diagonal.
+/// Lambda = (J M^-1 J^T)^-1 for an m-row task Jacobian.
+/// The full matrix is needed: the off-diagonal terms are as large as the diagonal.
 pub fn task_space_inertia(m: &Mat, j: &Mat, n: usize) -> Mat {
     let mrows = j.rows;
     let mut minv = Mat::zeros(n, n);

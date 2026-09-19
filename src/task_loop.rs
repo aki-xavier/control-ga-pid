@@ -1,20 +1,10 @@
-// task_loop.rs — the unified task-space loop: one law, two parameterizations.
-//   tau = J' f + C q_dot + g;  num_i = k_i soft_i e_i - d_i v_task,i + alpha_i i_acc_i
-//   f = Lambda_m (num) in the poles reading, f = num in the physical reading.
-// J and Lambda come from one task Jacobian, so the plane count m is data, not controller identity.
-// The readings are NOT interchangeable: Poles keeps the closed-loop poles and bandwidth
-// configuration-invariant (the impedance K = Lambda wn^2 then varies), while Physical fixes the
-// impedance across the workspace (the pole pattern follows Lambda). Task selection is by choosing
-// J, never by zeroing planes' gains.
-//
-// THE FRAME (GA_PID_AUDIT.md #19): every task-space quantity here is in world axes ABOUT THE TIP,
-// in [v; w] order — the error's first three slots are the tip's point-image difference and the last
-// three the world rotvec; J's rows are the tip's linear then angular rows (pinned against FK finite
-// differences in ../control-model/tests/urdf.rs). The metric is Lambda = (J M^-1 J^T)^-1, refreshed as
-// the configuration moves; a non-uniform Poles configuration is reported when built.
+// task_loop.rs — one task-space law, two readings: f = Lambda num in Poles, f = num in Physical,
+// then tau = J' f + C q_dot + g. `f` carries the ACCELERATION and `g` the weight; the error is
+// world axes about the tip, in [v; w] order.
 
 use crate::escape::TaskAvoidance;
 use crate::gains::PlaneGains;
+use crate::impedance::ImpedanceChannel;
 use crate::inertia::{effective_task_mass, fill, passivity_floor, task_space_inertia};
 use crate::keepout::{Keepout, BODY_LINK_RADII, TOOL_REACH};
 use crate::law;
@@ -29,10 +19,7 @@ use control_math::vec3::Vec3;
 
 const DBG_INTERNAL: bool = false;
 
-/// NONCONSERVATIVE_POLES_WARNED reports once per process a Poles loop whose per-plane (wn, zeta)
-/// or soft schedule is not uniform: it then presents K = Lambda diag(wn^2 soft), symmetric only
-/// when that diagonal is (GA_PID_AUDIT.md #19, pinned by tests/task_frame.rs). Every shipped Poles
-/// path is uniform.
+/// Set once per process for a Poles loop whose per-plane gains are non-uniform, so K is asymmetric.
 static NONCONSERVATIVE_POLES_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -40,14 +27,14 @@ fn warn_nonconservative_poles() {
     if !NONCONSERVATIVE_POLES_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         eprintln!(
             "simu: a Poles loop's gains are not uniform across planes, so the stiffness it\
-             presents (K = Lambda diag(wn^2 soft)) is asymmetric — non-conservative\
-             (GA_PID_AUDIT.md #19). The shipped paths are uniform; the Physical reading is\
+             presents (K = Lambda diag(wn^2 soft)) is asymmetric — non-conservative.\
+             The shipped paths are uniform; the Physical reading is\
              the frame for a per-plane impedance."
         );
     }
 }
 
-/// PlaneTaskLoop is the state: gains, integral accumulator, contact fade factors, the cached shaping matrix and the refresh bookkeeping.
+/// PlaneTaskLoop — task-space loop state: gains, integral, contact fade, cached shaping matrix.
 #[derive(Clone, Debug)]
 pub struct PlaneTaskLoop {
     pub m: usize,
@@ -69,8 +56,7 @@ pub struct PlaneTaskLoop {
     pub f_tau: f64,
     pub share: Vec<f64>,
     pub force_target: Vec<f64>,
-    /// ref_dq is the Lambda cache's refresh threshold: recomputed once max|dq| since the last refresh
-    /// exceeds it (<= 0 refreshes every tick). Not on the options surface.
+    /// Lambda refresh threshold: recomputed once max|dq| since the last refresh exceeds it (<= 0 = every tick).
     pub ref_dq: f64,
     pub soft: Vec<f64>,
     pub full_body: bool,
@@ -79,30 +65,19 @@ pub struct PlaneTaskLoop {
     pub body_rs: Vec<f64>,
     pub keepouts: Vec<Keepout>,
     pub escape_priority: bool,
-    /// recruit is the minimal-authority-first switch (SPINAL_PROGRAM.md #8): the escape's DEMAND is
-    /// split by each joint's effort limit, so the cheap joints take it first.
+    /// Minimal-authority-first escape: the demand is split by each joint's effort limit.
     pub recruit: bool,
-    /// escape_dq is the joint-space escape increment from the last solve, for the caller's readout.
+    /// Joint-space escape increment from the last solve, for the caller's readout.
     pub escape_dq: Vec<f64>,
     pub ko_margin: f64,
     pub shape_goal: bool,
     pub u_lim: Vec<f64>,
-    /// coact_cmd is the descending impedance channel (SPINAL_PROGRAM.md Phase 1): stiffness scales
-    /// by (1 + coact), damping by sqrt(1 + coact), so the equilibrium point does not move. The
-    /// APPLIED level ramps toward it at coact_rate [1/s]; 0 is the shipped default.
-    pub coact_cmd: f64,
-    pub coact_rate: f64,
-    pub coact: f64,
+    /// Impedance channel: kp by (1 + level), kd by sqrt(1 + level), so the equilibrium does not move; level 0 = default.
+    pub impedance: ImpedanceChannel,
     pub lam: Mat,
     pub q_ref: Vec<f64>,
-    /// eff is the arm's efference copy (`../control-base/src/efference.rs`): one channel per joint, the torque this
-    /// loop COMMANDED against the generalized force the plant's step says it APPLIED, and their
-    /// difference — the applied side reconstructed from the velocity the plant's integrator produced
-    /// (the arm's `CEnginePlant::step` inverts to the torque it must have applied, per joint). A COPY
-    /// only: nothing here computes a number in the law from it.
-    ///
-    /// The caller can break the pair: the plant must be stepped by the same `dt`, once per call, with
-    /// its viscous damping equal to this loop's `damp` (an empty `damp` reads it as residual).
+    /// Efference copy: the torque commanded against the force the plant's step implies it applied; a copy only.
+    /// Contract: the caller steps the plant by the same `dt`, once per call, with its viscous damping equal to `damp`.
     pub eff: Efference,
     /// The copy's ledger: the plant's model terms at the state the command was formed from.
     eff_cmd: Vec<f64>,
@@ -110,14 +85,12 @@ pub struct PlaneTaskLoop {
     eff_m: Mat,
     eff_rg: Vec<f64>,
     eff_dt: f64,
-    /// structure_checked is the once-flag for the plant-structure report (`check_structure`): the
-    /// loop reads the machine's declared structure on its first tick and says so where the direct
-    /// map's premises do not hold.
+    /// structure_checked gates the once-per-loop plant-structure report (`check_structure`).
     structure_checked: bool,
 }
 
 impl PlaneTaskLoop {
-    /// new normalizes an option set into a loop; m comes from the design, else from the gain array.
+    /// Builds a loop from an option set; m comes from the design, else from the gain array.
     pub fn new(n: usize, o: PlaneTaskLoopOpts) -> PlaneTaskLoop {
         let mut m = o.gains.m;
         if m == 0 {
@@ -152,8 +125,7 @@ impl PlaneTaskLoop {
             i_aw_off: o.integral.i_anti_windup_off,
             i_acc: vec![0.0; m],
             u_lim: o.integral.u_lim.clone(),
-            // the contact schedule starts OPEN (k_ratio 1 = no softening); the arm's bench_contact's
-            // contact_schedule sets it
+            // contact schedule starts OPEN: k_ratio 1 = no softening
             k_ratio: 1.0,
             f_floor: 0.0,
             f_tau: 0.0,
@@ -171,10 +143,7 @@ impl PlaneTaskLoop {
             escape_dq: Vec::new(),
             ko_margin: o.avoid.ko_margin,
             shape_goal: !o.avoid.disable_goal_shaping,
-            // the channel's own entry, so `rate <= 0` applies here too; LEVEL 0 SKIPS THE CALL
-            coact_cmd: 0.0,
-            coact_rate: 0.0,
-            coact: 0.0,
+            impedance: ImpedanceChannel::new(),
             lam: Mat::zeros(0, 0),
             q_ref: Vec::new(),
             eff: Efference::new(),
@@ -185,7 +154,7 @@ impl PlaneTaskLoop {
             eff_dt: 0.0,
             structure_checked: false,
         };
-        // the arm's channels are joint torques, so the unit is N.m (the type's default is the legs' "N")
+        // joint torques, so the unit is N.m (the type's default is "N")
         lp.eff.unit = "N.m".to_string();
         if o.impedance.coactivation != 0.0 {
             lp.set_coactivation(o.impedance.coactivation, o.impedance.coactivation_rate);
@@ -193,7 +162,7 @@ impl PlaneTaskLoop {
         lp
     }
 
-    /// new_position is the free-space position entry: three planes, poles reading, no contact layers.
+    /// Free-space position entry: three planes, poles reading, no contact layers.
     pub fn new_position(n: usize, wn: f64, zeta: f64) -> PlaneTaskLoop {
         PlaneTaskLoop::new(
             n,
@@ -210,7 +179,7 @@ impl PlaneTaskLoop {
         )
     }
 
-    /// new_pose is the full-pose entry: six planes, poles reading by default.
+    /// Full-pose entry: six planes, poles reading.
     pub fn new_pose(n: usize, wn: f64, zeta: f64) -> PlaneTaskLoop {
         PlaneTaskLoop::new(
             n,
@@ -227,7 +196,7 @@ impl PlaneTaskLoop {
         )
     }
 
-    /// new_physical is the impedance entry: real K and D, read as a fixed mechanical impedance.
+    /// Impedance entry: real K and D, read as a fixed mechanical impedance.
     pub fn new_physical(n: usize, k: &[f64], d: &[f64]) -> PlaneTaskLoop {
         PlaneTaskLoop::new(
             n,
@@ -244,8 +213,7 @@ impl PlaneTaskLoop {
         )
     }
 
-    /// new_joint is the joint-space entry: the planes are the joints, the metric is the mass matrix's
-    /// diagonal, no frame map appears, and k_eff is diagnostic (see `per_plane_kd`). Use step_joint.
+    /// Joint-space entry: the planes are the joints, the metric the mass matrix's diagonal; k_eff is diagnostic.
     pub fn new_joint(n: usize, wn: f64, zeta: f64, k_eff: &[f64]) -> PlaneTaskLoop {
         PlaneTaskLoop::new(
             n,
@@ -263,11 +231,7 @@ impl PlaneTaskLoop {
         )
     }
 
-    /// check_structure reads the plant's DECLARED structure once and reports where this loop's
-    /// realization cannot hold. The direct map (tau = J' f + bias) is exact only for a base welded
-    /// to the world with every generalized coordinate driven, and only when the loop's own plane
-    /// count matches the DOF it maps through — three premises the old contract never stated and a
-    /// mismatch never reported. Reported once per loop, like the non-conservative Poles warning.
+    /// Reads the plant's DECLARED structure once and reports where this loop's direct map cannot hold.
     fn check_structure(&mut self, plant: &mut dyn Plant) {
         if self.structure_checked {
             return;
@@ -305,8 +269,6 @@ impl PlaneTaskLoop {
         }
     }
 
-    /// take_efference samples the copy of the LAST command: the torque this loop returned against the
-    /// generalized force the plant's step implies it applied (no sample until both sides exist).
     fn take_efference(&mut self, plant: &mut dyn Plant) {
         self.check_structure(plant);
         if self.eff_cmd.len() != self.n
@@ -350,7 +312,7 @@ impl PlaneTaskLoop {
         self.eff.observe(&self.eff_cmd, &applied);
     }
 
-    /// record_command caches what `take_efference` needs (torque, model terms); called AFTER the clamp.
+    /// Caches what `take_efference` needs; call AFTER the clamp.
     fn record_command(&mut self, plant: &mut dyn Plant, tau: &[f64], dt: f64) {
         self.eff_cmd = tau.to_vec();
         self.eff_v = plant.joint_velocities();
@@ -363,8 +325,7 @@ impl PlaneTaskLoop {
         self.eff_dt = dt;
     }
 
-    /// integrate_gated advances the integral tier by the anti-windup gate: a joint integrates while
-    /// its command is inside the limit or is being pulled back toward it, and freezes otherwise.
+    /// A joint integrates while inside its limit or pulled back toward it, and freezes otherwise.
     fn integrate_gated(
         &self,
         i_acc: &[f64],
@@ -389,9 +350,7 @@ impl PlaneTaskLoop {
         out
     }
 
-    /// step_joint runs the joint design: the error is q_des - q, the per-joint gains are
-    /// (wn^2, 2 zeta wn) with k_eff diagnostic rather than a term, and the mass matrix turns the
-    /// commanded acceleration into torque. No Jacobian enters, so no two inner products are mixed.
+    /// Joint design: e = q_des - q, gains (wn^2, 2 zeta wn) with k_eff diagnostic, M turns acceleration into torque.
     /// v_des is the reference joint velocity; the integral tier updates AFTER the torque is known.
     pub fn step_joint(
         &mut self,
@@ -412,8 +371,7 @@ impl PlaneTaskLoop {
         for i in 0..m {
             let (kv, dv) = self.per_plane_kd(i);
             let vd = if i < v_des.len() { v_des[i] } else { 0.0 };
-            // the law with the commanded joint velocity as its reference (v_ref = v_des): the joint
-            // reading states the same damping on the velocity error the task readings do
+            // v_ref = v_des: the joint reading damps the velocity error like the task readings do
             let g = PlaneGains {
                 kappa_p: kv,
                 kappa_d: dv,
@@ -432,17 +390,16 @@ impl PlaneTaskLoop {
         let mut tau = mm.mul_vec(&a);
         let bias = plant.bias_torques();
         let g = plant.gravity_torques();
+        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
         for i in 0..self.n {
             tau[i] += bias[i] + g[i];
             if i < self.damp.len() && self.damp[i] != 0.0 {
                 tau[i] += self.damp[i] * v[i];
             }
         }
-        // integral tier, before the clamp but after the unclamped torque is known:
         if self.u_lim.len() == self.n && !self.i_aw_off {
             let mut err = dq.clone();
             for i in 0..m {
-                // no integral gain, or an error outside the deadband: no integral input this tick
                 if self.i_alpha[i] == 0.0
                     || (self.i_deadband > 0.0 && dq[i].abs() > self.i_deadband)
                 {
@@ -477,10 +434,7 @@ impl PlaneTaskLoop {
         tau
     }
 
-    /// whole_arm_escape_dqs samples the chain axis (base -> link frames -> tool flange) plus quarter
-    /// points per segment, takes each sample's worst keep-out escape inflated by the per-segment
-    /// link radius, and maps it (damped LS, stacked segment Jacobians) to a joint-space escape
-    /// increment — the target for the null-space secondary task in step_ff, kept in `escape_dq`.
+    /// Samples the chain plus quarter points; the worst keep-out escape per point is mapped (damped LS) into `escape_dq`.
     fn whole_arm_escape_dqs(&mut self, plant: &mut dyn Plant) -> (Vec<f64>, f64) {
         let n = self.n;
         let mut vmax = 0.0;
@@ -488,10 +442,7 @@ impl PlaneTaskLoop {
         let mut jjs: Vec<Mat> = Vec::new();
         pts.push(Vec3::new(0.0, 0.0, 0.0));
         jjs.push(Mat::zeros(3, n));
-        // THE BODIES COME FROM THE PLANT'S OWN DECLARATION, in the order it gives them: body i is
-        // the distal link of generalized coordinate i, which is exactly what `link_frame(i)` used to
-        // mean (GA_PID_AUDIT.md's frame item); the tool flange sample is the plant's declared task
-        // frame, not a frame this loop assumed.
+        // bodies come from the plant's declared order: body i is the distal link of coordinate i
         let s = plant.structure();
         let bodies = s.bodies;
         let tip_frame = s.task_frame;
@@ -579,9 +530,7 @@ impl PlaneTaskLoop {
             let am = Mat::from_rows(&rowmat);
             dqs = DampedLstsq::new(n, 1e-6).solve(&am, &es);
         }
-        // Recruitment acts on the DEMAND, not through the solve's metric: the stacked Jacobian is
-        // tall, so its least-squares answer is unique and a price table cannot move it. Uniform
-        // prices leave this the shipped loop bit for bit.
+        // recruitment acts on the DEMAND, not through the solve's metric: uniform prices leave it bit for bit
         if self.recruit {
             let w = self.recruit_weights();
             for (i, d) in dqs.iter_mut().enumerate() {
@@ -592,9 +541,7 @@ impl PlaneTaskLoop {
         (dqs, vmax)
     }
 
-    /// recruit_weights is the escape's own price table, read from `u_lim`: a joint's effort limit is
-    /// the size of its unit, which is what the size principle orders by. No limits of the right
-    /// length means unit weights, i.e. the shipped solve.
+    /// The escape's price table from `u_lim` (effort limit = unit size); a wrong-length `u_lim` gives unit weights.
     fn recruit_weights(&self) -> Vec<f64> {
         let lim: Vec<f64> = if self.u_lim.len() == self.n {
             self.u_lim.clone()
@@ -606,35 +553,12 @@ impl PlaneTaskLoop {
         r.weights()
     }
 
-    /// set_coactivation is the impedance channel's command entry: the level and the ramp rate that
-    /// bounds how fast the stiffness may move. rate <= 0 applies the level directly; level 0 is the
-    /// shipped loop and the default.
+    /// Commands the impedance level and ramp rate; rate <= 0 applies the level directly, level 0 is the default.
     pub fn set_coactivation(&mut self, level: f64, rate: f64) {
-        self.coact_cmd = level.max(0.0);
-        self.coact_rate = rate;
-        if rate <= 0.0 {
-            self.coact = self.coact_cmd;
-        }
+        self.impedance.set(level, rate);
     }
 
-    /// coact_scale applies the impedance channel to one (kp, kd) pair: stiffness by (1 + c), damping
-    /// by sqrt(1 + c), so the damping ratio survives and K = Lambda diag(wn^2 (1+c)) stays a uniform
-    /// scalar times the design's — GA_PID_AUDIT.md #19 holds because the scale is uniform.
-    fn coact_scale(&self, kp: f64, kd: f64) -> (f64, f64) {
-        if self.coact <= 0.0 {
-            return (kp, kd);
-        }
-        let s = 1.0 + self.coact;
-        (kp * s, kd * s.sqrt())
-    }
-
-    /// per_plane_kd returns the stiffness and damping the law uses on one plane in the current
-    /// reading (poles/joint derive them from the design tuple, physical takes them as given).
-    /// Public because the integration tests read it directly.
-    ///
-    /// The joint reading's stiffness is wn^2, NOT wn^2 - k_eff: step_joint feeds the plant's bias +
-    /// gravity forward already, so subtracting k_eff removed stiffness the design asked for (with
-    /// both signs over the joints, GA_PID_AUDIT.md #4/#5).
+    /// Stiffness and damping for one plane in the current reading; the joint reading's is wn^2, NOT wn^2 - k_eff, and the impedance scale applies here.
     pub fn per_plane_kd(&self, i: usize) -> (f64, f64) {
         if self.mode == GainMode::Poles || self.mode == GainMode::Joint {
             let alpha = if i < self.i_alpha.len() {
@@ -643,12 +567,12 @@ impl PlaneTaskLoop {
                 0.0
             };
             let g = law::gains(self.wn[i], self.zeta[i], alpha);
-            return self.coact_scale(g.kappa_p, g.kappa_d);
+            return self.impedance.scale(g.kappa_p, g.kappa_d);
         }
-        self.coact_scale(self.k[i], self.d[i])
+        self.impedance.scale(self.k[i], self.d[i])
     }
 
-    /// plane_masses: the cached shaping matrix's diagonal when valid, else the full-pose one.
+    /// The cached shaping matrix's diagonal when valid, else the full-pose one.
     fn plane_masses(&self, plant: &mut dyn Plant) -> Vec<f64> {
         if self.lam.rows == self.m && self.lam.cols == self.m {
             return self.lam.diag();
@@ -657,9 +581,7 @@ impl PlaneTaskLoop {
         effective_task_mass(&plant.mass_matrix(), &j6, self.n)
     }
 
-    /// step_points is the multi-point task reading of the same law: n_p task points (three planes per
-    /// point), with cur in the row order of the stacked task Jacobian (task_jacobian, 3 n_p x n)
-    /// and targets as their references. Free-space poles core only (see step/step_ff for the rest).
+    /// Multi-point reading of the same law: three planes per point, `cur` in the stacked task Jacobian's row order.
     pub fn step_points(
         &mut self,
         plant: &mut dyn Plant,
@@ -698,7 +620,6 @@ impl PlaneTaskLoop {
         let mut num = vec![0.0; m];
         for i in 0..m {
             let (kv, dv) = self.per_plane_kd(i);
-            // no reference velocity in this reading, so the law's v_ref term is zero here
             let g = PlaneGains {
                 kappa_p: kv,
                 kappa_d: dv,
@@ -718,11 +639,10 @@ impl PlaneTaskLoop {
         let mut tau = j.transposed().mul_vec(&f);
         let bias = plant.bias_torques();
         let g = plant.gravity_torques();
+        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
         for i in 0..self.n {
             tau[i] += bias[i] + g[i];
         }
-        // null-space damping with the dynamically consistent projector: tau_null = -D q_dot +
-        // J' Lambda J M^-1 (D q_dot) damps only the redundant degrees of freedom.
         if self.u_lim.len() == self.n {
             for i in 0..self.n {
                 if self.u_lim[i] > 0.0 {
@@ -739,7 +659,7 @@ impl PlaneTaskLoop {
         tau
     }
 
-    /// step computes the joint torques for one control sample: step_ff with empty references.
+    /// One control sample: step_ff with empty references.
     pub fn step(
         &mut self,
         plant: &mut dyn Plant,
@@ -751,8 +671,7 @@ impl PlaneTaskLoop {
         self.step_ff(plant, target_pos, target_quat, &[], &[], dt, contact_f)
     }
 
-    /// step_ff is the feedforward form of step: the reference's velocity and acceleration enter the
-    /// design directly (F = Lambda (a_ref + wn^2 e + 2 zeta wn (v_ref - v))); empty refs = static.
+    /// Feedforward form of step: F = Lambda (a_ref + wn^2 e + 2 zeta wn (v_ref - v)); empty refs = static.
     #[allow(clippy::too_many_arguments)]
     pub fn step_ff(
         &mut self,
@@ -767,15 +686,8 @@ impl PlaneTaskLoop {
         self.take_efference(plant);
         let m = self.m;
         // the applied co-activation ramps toward the command once per tick, before any gain is read
-        if self.coact_rate > 0.0 && dt > 0.0 && self.coact != self.coact_cmd {
-            let step = self.coact_rate * dt;
-            let d = self.coact_cmd - self.coact;
-            self.coact += if d.abs() <= step {
-                d
-            } else {
-                step * d.signum()
-            };
-        }
+        let coact_cmd = self.impedance.command;
+        self.impedance.advance(coact_cmd, dt);
         let j = if m == 6 {
             plant.task_full_jacobian()
         } else {
@@ -807,19 +719,13 @@ impl PlaneTaskLoop {
             }
         }
         let (cur, cq) = plant.task_pose();
-        // end-effector keep-out shaping: the target is projected out of the convex keep-out sets in
-        // task space (escape.rs safe_target), the GOAL-side half of avoidance (the path-side
-        // half being the null-space whole-arm escape below, full_body).
         let mut goal = target_pos;
         if self.shape_goal && !self.keepouts.is_empty() {
             let (sg, _, _) =
                 TaskAvoidance.safe_target(cur, target_pos, &self.keepouts, self.ko_margin);
             goal = sg;
         }
-        // THE ERROR CHANNEL IS SIX WORLD-AXIS SCALARS: the tip displacement and the world rotvec, not
-        // the theory's one geometric object `B_e = -2 log(M_d ~M)` — that object's translation half is
-        // the screw's MOMENT about the motor's origin, not the endpoint displacement, and feeding it
-        // into these slots drives the arm off target (GA_PID_AUDIT.md #3).
+        // the error channel is six WORLD-AXIS scalars: tip displacement then world rotvec, not B_e = -2 log(M_d ~M)
         let mut e = vec![0.0; m];
         let dp = goal.sub(cur);
         e[0] = dp.x;
@@ -837,8 +743,6 @@ impl PlaneTaskLoop {
         // contact schedule: soften the aligned planes towards k * k_ratio, faded with f_tau.
         if self.k_ratio < 1.0 {
             if self.mode == GainMode::Poles {
-                // a Poles loop under the schedule softens planes independently, so its stiffness goes
-                // non-conservative with the first anisotropic wrench (GA_PID_AUDIT.md #19)
                 warn_nonconservative_poles();
             }
             let mut target = vec![1.0; m];
@@ -869,7 +773,6 @@ impl PlaneTaskLoop {
             }
         }
 
-        // integral tier, gated when a deadband is set
         if self.i_deadband > 0.0 {
             for i in 0..m {
                 if self.i_alpha[i] != 0.0 && e[i].abs() <= self.i_deadband {
@@ -884,8 +787,7 @@ impl PlaneTaskLoop {
             }
         }
 
-        // per-plane damping: the configured value raised to the passivity floor, applied here rather
-        // than written back into c.d so it cannot ratchet upward as the configuration moves
+        // raised to the passivity floor here, never written back into d
         let mut dv_eff = vec![0.0; m];
         let mut masses: Vec<f64> = Vec::new();
         if self.passivity && self.mode == GainMode::Physical {
@@ -899,8 +801,7 @@ impl PlaneTaskLoop {
             }
             dv_eff[i] = dd;
         }
-        // plane-space damping mapping: corr = J M^-1 (D q_dot), added to the plane numerator before the
-        // shaping, so the closed-loop task damping is the design's (a single 3x3 plane-space term).
+        // plane-space damping mapping: corr = J M^-1 (D q_dot), added to the numerator before shaping.
         let mut corr = vec![0.0; m];
         if self.damp.len() == self.n {
             let mut dqv = vec![0.0; self.n];
@@ -916,8 +817,6 @@ impl PlaneTaskLoop {
             let (kv, _) = self.per_plane_kd(i);
             let rv = if i < ref_vel.len() { ref_vel[i] } else { 0.0 };
             let ra = if i < ref_acc.len() { ref_acc[i] } else { 0.0 };
-            // the contact schedule's soft factor and the passivity floor are folded into the gains the
-            // law is handed, so the law's own expression is the one evaluated
             let g = PlaneGains {
                 kappa_p: kv * self.soft[i],
                 kappa_d: dv_eff[i],
@@ -944,15 +843,11 @@ impl PlaneTaskLoop {
         let mut tau = j.transposed().mul_vec(&f);
         let bias = plant.bias_torques();
         let g = plant.gravity_torques();
+        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
         for i in 0..self.n {
             tau[i] += bias[i] + g[i];
         }
-        // Joint damping is compensated in plane space via the corr term above (the per-joint
-        // feedforward forms destabilised the stiff wrist joint).
-        //
-        // whole-arm escape as a null-space secondary task: the escape PD's torque is projected by
-        // N' = I - J' Jbar', so it holds the links clear of the keep-outs without disturbing the task:
-        // tau_escape = (I - J' Lambda J M^-1) M a2.
+        // whole-arm escape as a null-space secondary task: tau_escape = (I - J' Lambda J M^-1) M a2.
         if self.full_body && !self.keepouts.is_empty() {
             let (dqs, vmax) = self.whole_arm_escape_dqs(plant);
             let (kv, dv) = self.per_plane_kd(0);
@@ -963,8 +858,7 @@ impl PlaneTaskLoop {
             let massm = plant.mass_matrix();
             let ma2 = massm.mul_vec(&a2);
             if self.escape_priority {
-                // task-priority: the escape acts in FULL joint space, the task fading as the chain
-                // sinks into a keep-out, wt = 1 - vmax/0.02.
+                // task-priority: the escape acts in FULL joint space, the task fading as wt = 1 - vmax/0.02
                 let wt = if vmax > 0.0 {
                     (1.0 - vmax / 0.02).max(0.0)
                 } else {
@@ -974,8 +868,7 @@ impl PlaneTaskLoop {
                     tau[i] = wt * tau[i] + ma2[i];
                 }
             } else {
-                // metric-orthogonal: the escape cannot fight the task, so it only holds the boundary,
-                // with no task fade.
+                // metric-orthogonal: the escape cannot fight the task, so it only holds the boundary
                 let mut lam_e = self.lam.clone();
                 if lam_e.rows != j.rows {
                     lam_e = task_space_inertia(&massm, &j, self.n);
