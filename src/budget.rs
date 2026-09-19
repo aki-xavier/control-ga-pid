@@ -5,7 +5,7 @@
 
 use crate::design::{wn_for_settling, zeta_from_overshoot};
 use control_math::mat::Mat;
-use control_math::task_space_bridge::TaskSpaceBridge;
+use control_math::lstsq::DampedLstsq;
 use std::f64::consts::PI;
 
 /// MotionBudget is the window the budgets leave open; `feasible` is false when wn_hi < wn_lo (the actuators
@@ -62,7 +62,7 @@ pub fn step_demand(
     let nu = j.rows;
     let nj = j.cols;
     // damped least squares: dq = J' (J J' + ridge I)^-1 e, the right-inverse ridge form used throughout the core
-    let dq_full = TaskSpaceBridge::new(nu, ridge).solve_right(j, step);
+    let dq_full = DampedLstsq::new(nu, ridge).solve_right(j, step);
     let mut dq = vec![0.0; nj];
     for k in 0..nj {
         let mut s = dq_full[k];

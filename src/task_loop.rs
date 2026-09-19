@@ -24,7 +24,7 @@ use control_base::efference::Efference;
 use control_base::plant::Plant;
 use control_math::mat::Mat;
 use control_math::quat::Quat;
-use control_math::task_space_bridge::TaskSpaceBridge;
+use control_math::lstsq::DampedLstsq;
 use control_math::vec3::Vec3;
 
 const DBG_INTERNAL: bool = false;
@@ -521,7 +521,7 @@ impl PlaneTaskLoop {
         let mut dqs = vec![0.0; n];
         if !es.is_empty() {
             let am = Mat::from_rows(&rowmat);
-            dqs = TaskSpaceBridge::new(n, 1e-6).step(&am, &es);
+            dqs = DampedLstsq::new(n, 1e-6).solve(&am, &es);
         }
         // Recruitment acts on the DEMAND, not through the solve's metric: the stacked Jacobian is
         // tall, so its least-squares answer is unique and a price table cannot move it. Uniform

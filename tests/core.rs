@@ -1,4 +1,4 @@
-// core.rs — unit tests for the plane_design / bridge / keepout building blocks of the GA-PID
+// core.rs — unit tests for the plane_design / least-squares / keepout building blocks of the GA-PID
 // core. The math half lives in control-math's own tests/math.rs, which is that layer's home.
 
 use control_ga_pid::box_ko::BoxKo;
@@ -12,7 +12,7 @@ use control_ga_pid::plane_ko::PlaneKo;
 use control_ga_pid::sphere_ko::SphereKo;
 use control_math::mat::Mat;
 use control_math::quat::Quat;
-use control_math::task_space_bridge::TaskSpaceBridge;
+use control_math::lstsq::DampedLstsq;
 use control_math::vec3::Vec3;
 use control_model::pga_dynamics::PgaDynamicsModel;
 use control_model::urdf::{home_q, load_urdf_chain, urdf_path};
@@ -115,19 +115,19 @@ fn task_class_derives_the_motion_tier() {
 }
 
 #[test]
-fn bridge_damped_least_squares() {
+fn damped_least_squares() {
     // 2x3 J with lam = 0: dq = J^T e, the right-inverse minimal-norm solution
     let j = Mat::from_rows(&[vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]]);
-    let b = TaskSpaceBridge::new(3, 0.0);
-    let dq = b.step(&j, &[2.0, 3.0]);
+    let b = DampedLstsq::new(3, 0.0);
+    let dq = b.solve(&j, &[2.0, 3.0]);
     assert_eq!(dq.len(), 3);
     assert!((dq[0] - 2.0).abs() < 1e-12);
     assert!((dq[1] - 3.0).abs() < 1e-12);
     assert!(dq[2].abs() < 1e-12);
     // Lam damped: full-rank 3x3 with ridge regularization; dq = (J'J+li)-1 J'e.
     let j2 = Mat::eye(3);
-    let b2 = TaskSpaceBridge::new(3, 0.1);
-    let dq2 = b2.step(&j2, &[1.0, 0.0, 0.0]);
+    let b2 = DampedLstsq::new(3, 0.1);
+    let dq2 = b2.solve(&j2, &[1.0, 0.0, 0.0]);
     assert!((dq2[0] - 1.0 / 1.1).abs() < 1e-12);
 }
 

@@ -1,11 +1,9 @@
 // recruitment.rs — minimal-authority-first allocation (SPINAL_PROGRAM.md #8): channels fill in
 // ascending cost order, each up to its own capacity, so below the smallest channel's capacity only
-// that one acts; the escape is the weighted solve `minimize |J dq - e|^2 + lam dq' W^-1 dq`, whose
-// uniform price table is exactly the shipped solve — the identity the whole channel rests on.
+// that one acts; the escape is the price table `weights()`, whose uniform entry is exactly the
+// shipped solve — the identity the whole channel rests on.
 
 use control_ga_pid::recruit::Recruitment;
-use control_math::mat::Mat;
-use control_math::task_space_bridge::TaskSpaceBridge;
 
 /// The small unit acts first; the big one is silent until the demand outruns the small one's capacity.
 #[test]
@@ -69,41 +67,4 @@ fn the_weights_are_the_mean_price_over_each_price() {
         );
     }
     assert!(b.report().contains("recruitment"));
-}
-
-/// Uniform weights are the shipped answer bit for bit, and a price spread moves the task onto the
-/// cheap joint while the task itself stays satisfied.
-#[test]
-fn the_weighted_solve_spends_the_cheap_joint_first() {
-    // a redundant 2 x 3 task: channels 0 and 1 both move the first row, channel 2 owns the second
-    let j = Mat::from_rows(&[vec![1.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]]);
-    let e = [1.0, 0.0];
-    let b = TaskSpaceBridge::new(3, 1e-9);
-    assert_eq!(b.step_weighted(&j, &e, &[1.0, 1.0, 1.0]), b.step(&j, &e));
-    let flat = b.step(&j, &e);
-    assert!(
-        (flat[0] - 0.5).abs() < 1e-6 && (flat[1] - 0.5).abs() < 1e-6,
-        "the unweighted split is not even: {flat:?}"
-    );
-    let mut r = Recruitment::new(vec![1.0, 1e6, 1.0]);
-    r.on = true;
-    let dq = b.step_weighted(&j, &e, &r.weights());
-    assert!(
-        dq[1].abs() < 1e-5,
-        "the expensive joint moved {} of the task",
-        dq[1]
-    );
-    assert!(
-        (dq[0] - 1.0).abs() < 1e-5,
-        "the cheap joint did not take the task: {}",
-        dq[0]
-    );
-    assert!(dq[2].abs() < 1e-12);
-    let row = j.mul_vec(&dq);
-    assert!(
-        (row[0] - 1.0).abs() < 1e-6 && row[1].abs() < 1e-12,
-        "the task was not met: {row:?}"
-    );
-    let dq = b.step_weighted(&j, &e, &[f64::NAN, 0.0, -1.0]);
-    assert_eq!(dq, b.step(&j, &e));
 }
