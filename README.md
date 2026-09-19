@@ -75,7 +75,13 @@ not live under either of them:
 ## Building
 
 ```sh
-cargo test                                     # 20 tests, no engine needed
+cargo test                                     # 23 tests, no engine needed
 cargo clippy --all-targets -- -D warnings
 cargo run --release --example plane_mode_probe # GA_PID_AUDIT.md #19's premise
 ```
+
+`tests/` carries the plant the closed-loop tests drive (`common/mod.rs`): the same rigid-body ODE
+`simu` integrates — semi-implicit Euler over the PGA dynamics, implicit joint damping, joint limits
+as bilateral constraints — with the engine's **world mirror** left out, which no law reads. So it is
+not a stand-in, and the numbers it produces are the numbers `simu`'s engine-backed bench produces.
+Building it here is what lets `cargo test` in this directory need no MuJoCo and no `build.rs`.
