@@ -11,7 +11,7 @@ use crate::law;
 use crate::opts::{GainMode, PlaneTaskLoopOpts};
 use crate::recruit::Recruitment;
 use control_base::efference::Efference;
-use control_base::plant::Plant;
+use control_base::plant::{Plant, TaskMap};
 use control_math::mat::Mat;
 use control_math::quat::Quat;
 use control_math::lstsq::DampedLstsq;
@@ -267,6 +267,25 @@ impl PlaneTaskLoop {
                  contact), so a wrench demand written at a task frame has no source"
             );
         }
+        // A POINT task has no rotation, so a six-plane reading asks for three numbers that are not
+        // there. `task_pose` answers the identity and `task_full_jacobian` an empty matrix rather than
+        // inventing rows, which is why this has to be said BEFORE either is used.
+        if s.task_is_a_point() && self.m == 6 {
+            eprintln!(
+                "simu: the plant's task is a POINT ({}) and this loop reads six planes, so its last \
+                 three are a rotation the task does not have (PlantStructure::task_map, \
+                 task_is_a_point) — build a position loop (`new_position`) for it",
+                s.task_map.name()
+            );
+        }
+        if s.task_is_a_point() && self.shape_goal && !self.keepouts.is_empty() {
+            eprintln!(
+                "simu: the plant's task is a POINT ({}) and this loop shapes its goal out of keep-out \
+                 sets, whose sampling walks the chain out to the tip — a point task is on no link and \
+                 has no tip, so that last sample is dropped",
+                s.task_map.name()
+            );
+        }
     }
 
     fn take_efference(&mut self, plant: &mut dyn Plant) {
@@ -445,16 +464,24 @@ impl PlaneTaskLoop {
         // bodies come from the plant's declared order: body i is the distal link of coordinate i
         let s = plant.structure();
         let bodies = s.bodies;
-        let tip_frame = s.task_frame;
+        // the TIP is only a place to sample when the task is a FRAME. A point task (the centre of mass)
+        // is not on the chain and has no tip the way a link does, so this whole-body escape cannot
+        // sample beyond the bodies themselves — reported once, where the structure is checked.
+        let tip_frame = match &s.task_map {
+            TaskMap::Frame(f) => Some(f.clone()),
+            TaskMap::Point(_) => None,
+        };
         let nb = bodies.len().min(n);
         for (i, name) in bodies.iter().enumerate().take(nb) {
             let (p, rot) = plant.body_frame(name);
             pts.push(p);
             jjs.push(plant.body_jacobian(name));
             if i + 1 == nb {
-                let u = rot.mul_vec3(Vec3::new(1.0, 0.0, 0.0)).normalized();
-                pts.push(p.add(u.scale(TOOL_REACH)));
-                jjs.push(plant.frame_jacobian(&tip_frame));
+                if let Some(f) = &tip_frame {
+                    let u = rot.mul_vec3(Vec3::new(1.0, 0.0, 0.0)).normalized();
+                    pts.push(p.add(u.scale(TOOL_REACH)));
+                    jjs.push(plant.frame_jacobian(f));
+                }
             }
         }
         let mut rad: Vec<f64> = Vec::new();

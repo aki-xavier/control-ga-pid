@@ -2,7 +2,7 @@
 
 #![allow(dead_code)] // each integration test compiles this module on its own
 
-use control_base::plant::{Plant, PlantStructure};
+use control_base::plant::{Plant, PlantStructure, TaskMap};
 use control_math::mat::Mat;
 use control_math::quat::Quat;
 use control_math::vec3::Vec3;
@@ -126,7 +126,7 @@ impl Plant for ChainPlant {
         PlantStructure::fixed_base(
             self.n,
             self.chain.child_names.clone(),
-            TASK_FRAME.to_string(),
+            TaskMap::Frame(TASK_FRAME.to_string()),
         )
     }
 
@@ -188,6 +188,17 @@ impl Plant for ChainPlant {
         };
         self.chain
             .full_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, p)
+    }
+
+    /// point_position / point_jacobian: this chain presents NO non-frame points, which is what
+    /// `PlantStructure::points` declares — a chain's every point of interest is on a link, and
+    /// `frame_*` answers for those.
+    fn point_position(&mut self, name: &str) -> Vec3 {
+        unreachable!("{name}: this plant declares no points (PlantStructure::points is empty)")
+    }
+
+    fn point_jacobian(&mut self, name: &str) -> Mat {
+        unreachable!("{name}: this plant declares no points (PlantStructure::points is empty)")
     }
 
     fn body_frame(&mut self, name: &str) -> (Vec3, Mat) {
