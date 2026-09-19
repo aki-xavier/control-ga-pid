@@ -14,7 +14,7 @@
 
 #![allow(dead_code)] // each integration test compiles this module on its own
 
-use control_base::plant::Plant;
+use control_base::plant::{Plant, PlantStructure};
 use control_math::mat::Mat;
 use control_math::quat::Quat;
 use control_math::vec3::Vec3;
@@ -124,7 +124,31 @@ impl ChainPlant {
     }
 }
 
+/// TASK_FRAME is the name this plant declares for the frame its task is written in: the tip, which
+/// the chain composes out of the end link's own frame, the trailing fixed joints and the tool reach.
+const TASK_FRAME: &str = "tip";
+
+impl ChainPlant {
+    /// body_index resolves a body name to its chain index; the structure declares every name it will
+    /// answer for, so an unknown one is a caller's error and not a silent default.
+    fn body_index(&self, name: &str) -> usize {
+        self.chain
+            .child_names
+            .iter()
+            .position(|c| c == name)
+            .unwrap_or_else(|| panic!("this chain has no body {name}"))
+    }
+}
+
 impl Plant for ChainPlant {
+    fn structure(&self) -> PlantStructure {
+        PlantStructure::fixed_base(
+            self.n,
+            self.chain.child_names.clone(),
+            TASK_FRAME.to_string(),
+        )
+    }
+
     fn joint_positions(&mut self) -> Vec<f64> {
         self.q.clone()
     }
@@ -148,37 +172,54 @@ impl Plant for ChainPlant {
         self.pdyn.gravity_torques(&q)
     }
 
-    fn compute_jacobian(&mut self) -> Mat {
+    fn frame_pose(&mut self, name: &str) -> (Vec3, Quat) {
         let q = self.q.clone();
         self.pdyn.frames(&q);
-        let tip = self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0;
+        if name == TASK_FRAME {
+            return self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r);
+        }
+        let i = self.body_index(name);
+        (
+            self.pdyn.fr_o[i],
+            Quat::from_mat3(&self.pdyn.fr_r[i].clone()),
+        )
+    }
+
+    fn frame_jacobian(&mut self, name: &str) -> Mat {
+        let q = self.q.clone();
+        self.pdyn.frames(&q);
+        let p = if name == TASK_FRAME {
+            self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0
+        } else {
+            self.pdyn.fr_o[self.body_index(name)]
+        };
         self.chain
-            .point_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, tip)
+            .point_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, p)
     }
 
-    fn compute_full_jacobian(&mut self) -> Mat {
+    fn frame_full_jacobian(&mut self, name: &str) -> Mat {
         let q = self.q.clone();
         self.pdyn.frames(&q);
-        let tip = self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0;
+        let p = if name == TASK_FRAME {
+            self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0
+        } else {
+            self.pdyn.fr_o[self.body_index(name)]
+        };
         self.chain
-            .full_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, tip)
+            .full_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, p)
     }
 
-    fn body_pose(&mut self) -> (Vec3, Quat) {
+    fn body_frame(&mut self, name: &str) -> (Vec3, Mat) {
         let q = self.q.clone();
         self.pdyn.frames(&q);
-        self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r)
-    }
-
-    fn link_frame(&mut self, i: usize) -> (Vec3, Mat) {
-        let q = self.q.clone();
-        self.pdyn.frames(&q);
+        let i = self.body_index(name);
         (self.pdyn.fr_o[i], self.pdyn.fr_r[i].clone())
     }
 
-    fn link_jacobian(&mut self, i: usize) -> Mat {
+    fn body_jacobian(&mut self, name: &str) -> Mat {
         let q = self.q.clone();
         self.pdyn.frames(&q);
+        let i = self.body_index(name);
         self.chain
             .link_jacobian(&self.pdyn.fr_o, &self.pdyn.fr_r, i)
     }

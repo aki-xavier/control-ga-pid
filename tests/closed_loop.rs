@@ -47,7 +47,7 @@ fn arm(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
 #[test]
 fn the_poles_command_is_the_metric_applied_to_the_law() {
     let (mut plant, mut lp) = arm(15.0, 0.9);
-    let (cur, cq) = plant.body_pose();
+    let (cur, cq) = plant.task_pose();
     // a 10 mm step in z is the whole error: the other two planes are told to stay where they are
     let target = cur.add(Vec3::new(0.0, 0.0, 0.01));
 
@@ -55,7 +55,7 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
 
     let kp = 15.0 * 15.0;
     let num = [0.0, 0.0, kp * 0.01];
-    let j = plant.compute_jacobian();
+    let j = plant.task_jacobian();
     let m = plant.mass_matrix();
     let lam = task_space_inertia(&m, &j, 6);
     let f = lam.mul_vec(&num);
@@ -71,7 +71,7 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
         );
     }
     // and the step really is the whole of the demand: a zero step asks for no plane torque at all
-    let (cur2, _) = plant.body_pose();
+    let (cur2, _) = plant.task_pose();
     let tau0 = lp.step(&mut plant, cur2, cq, DT, &[]);
     for i in 0..6 {
         assert!(
@@ -88,17 +88,17 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
 #[test]
 fn a_setpoint_step_settles_on_its_target() {
     let (mut plant, mut lp) = arm(15.0, 0.9);
-    let (cur, cq) = plant.body_pose();
+    let (cur, cq) = plant.task_pose();
     let target = cur.add(Vec3::new(0.05, 0.03, -0.02));
 
     let mut worst: f64 = 0.0;
     for _ in 0..4000 {
         let tau = lp.step(&mut plant, target, cq, DT, &[]);
         plant.step(&tau, 1);
-        let (p, _) = plant.body_pose();
+        let (p, _) = plant.task_pose();
         worst = worst.max(p.sub(target).norm());
     }
-    let (p, _) = plant.body_pose();
+    let (p, _) = plant.task_pose();
     let e = p.sub(target).norm();
     assert!(e < 5e-4, "the tip ended {e} m from its target");
     assert!(
@@ -116,7 +116,7 @@ fn a_setpoint_step_settles_on_its_target() {
 #[test]
 fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
     let (mut plant, mut lp) = arm(15.0, 0.9);
-    let (cur, cq) = plant.body_pose();
+    let (cur, cq) = plant.task_pose();
     let target = cur.add(Vec3::new(0.02, 0.0, -0.03));
 
     let ticks = 50;

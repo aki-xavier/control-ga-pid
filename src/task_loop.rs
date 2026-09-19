@@ -110,6 +110,10 @@ pub struct PlaneTaskLoop {
     eff_m: Mat,
     eff_rg: Vec<f64>,
     eff_dt: f64,
+    /// structure_checked is the once-flag for the plant-structure report (`check_structure`): the
+    /// loop reads the machine's declared structure on its first tick and says so where the direct
+    /// map's premises do not hold.
+    structure_checked: bool,
 }
 
 impl PlaneTaskLoop {
@@ -179,6 +183,7 @@ impl PlaneTaskLoop {
             eff_m: Mat::zeros(0, 0),
             eff_rg: Vec::new(),
             eff_dt: 0.0,
+            structure_checked: false,
         };
         // the arm's channels are joint torques, so the unit is N.m (the type's default is the legs' "N")
         lp.eff.unit = "N.m".to_string();
@@ -258,9 +263,52 @@ impl PlaneTaskLoop {
         )
     }
 
+    /// check_structure reads the plant's DECLARED structure once and reports where this loop's
+    /// realization cannot hold. The direct map (tau = J' f + bias) is exact only for a base welded
+    /// to the world with every generalized coordinate driven, and only when the loop's own plane
+    /// count matches the DOF it maps through — three premises the old contract never stated and a
+    /// mismatch never reported. Reported once per loop, like the non-conservative Poles warning.
+    fn check_structure(&mut self, plant: &mut dyn Plant) {
+        if self.structure_checked {
+            return;
+        }
+        self.structure_checked = true;
+        let s = plant.structure();
+        if s.dof != self.n {
+            eprintln!(
+                "simu: this loop was built for {} generalized coordinates and its plant declares {} \
+                 (PlantStructure::dof), so the Jacobian columns and the torque length cannot agree",
+                self.n, s.dof
+            );
+        }
+        if !s.all_driven() {
+            let free = s.actuated.iter().filter(|a| !**a).count();
+            eprintln!(
+                "simu: the plant declares {free} undriven generalized coordinate(s), so a wrench \
+                 demand is not directly realizable — tau = J' f + bias assumes every coordinate is \
+                 driven, and an undriven one's row is a constraint the environment must satisfy"
+            );
+        }
+        if s.base_is_a_state() {
+            eprintln!(
+                "simu: the plant's base is a STATE (base_dof = {}), so this loop's direct map is \
+                 not the whole realization — the base rows must be sourced by contact, which the \
+                 loop does not do",
+                s.base_dof
+            );
+        }
+        if !s.braced() {
+            eprintln!(
+                "simu: nothing holds the machine in six directions (no welded base and no welded \
+                 contact), so a wrench demand written at a task frame has no source"
+            );
+        }
+    }
+
     /// take_efference samples the copy of the LAST command: the torque this loop returned against the
     /// generalized force the plant's step implies it applied (no sample until both sides exist).
     fn take_efference(&mut self, plant: &mut dyn Plant) {
+        self.check_structure(plant);
         if self.eff_cmd.len() != self.n
             || self.eff_v.len() != self.n
             || self.eff_rg.len() != self.n
@@ -440,14 +488,22 @@ impl PlaneTaskLoop {
         let mut jjs: Vec<Mat> = Vec::new();
         pts.push(Vec3::new(0.0, 0.0, 0.0));
         jjs.push(Mat::zeros(3, n));
-        for i in 0..n {
-            let (p, rot) = plant.link_frame(i);
+        // THE BODIES COME FROM THE PLANT'S OWN DECLARATION, in the order it gives them: body i is
+        // the distal link of generalized coordinate i, which is exactly what `link_frame(i)` used to
+        // mean (GA_PID_AUDIT.md's frame item); the tool flange sample is the plant's declared task
+        // frame, not a frame this loop assumed.
+        let s = plant.structure();
+        let bodies = s.bodies;
+        let tip_frame = s.task_frame;
+        let nb = bodies.len().min(n);
+        for (i, name) in bodies.iter().enumerate().take(nb) {
+            let (p, rot) = plant.body_frame(name);
             pts.push(p);
-            jjs.push(plant.link_jacobian(i));
-            if i == n - 1 {
+            jjs.push(plant.body_jacobian(name));
+            if i + 1 == nb {
                 let u = rot.mul_vec3(Vec3::new(1.0, 0.0, 0.0)).normalized();
                 pts.push(p.add(u.scale(TOOL_REACH)));
-                jjs.push(plant.compute_jacobian());
+                jjs.push(plant.frame_jacobian(&tip_frame));
             }
         }
         let mut rad: Vec<f64> = Vec::new();
@@ -597,12 +653,12 @@ impl PlaneTaskLoop {
         if self.lam.rows == self.m && self.lam.cols == self.m {
             return self.lam.diag();
         }
-        let j6 = plant.compute_full_jacobian();
+        let j6 = plant.task_full_jacobian();
         effective_task_mass(&plant.mass_matrix(), &j6, self.n)
     }
 
     /// step_points is the multi-point task reading of the same law: n_p task points (three planes per
-    /// point), with cur in the row order of the stacked task Jacobian (compute_jacobian, 3 n_p x n)
+    /// point), with cur in the row order of the stacked task Jacobian (task_jacobian, 3 n_p x n)
     /// and targets as their references. Free-space poles core only (see step/step_ff for the rest).
     pub fn step_points(
         &mut self,
@@ -613,7 +669,7 @@ impl PlaneTaskLoop {
     ) -> Vec<f64> {
         self.take_efference(plant);
         let m = self.m;
-        let j = plant.compute_jacobian();
+        let j = plant.task_jacobian();
         let mut e = vec![0.0; m];
         for i in 0..m {
             let p = i / 3;
@@ -721,9 +777,9 @@ impl PlaneTaskLoop {
             };
         }
         let j = if m == 6 {
-            plant.compute_full_jacobian()
+            plant.task_full_jacobian()
         } else {
-            plant.compute_jacobian()
+            plant.task_jacobian()
         };
         let q = plant.joint_positions();
         let needs_lam =
@@ -750,7 +806,7 @@ impl PlaneTaskLoop {
                 self.q_ref = q.clone();
             }
         }
-        let (cur, cq) = plant.body_pose();
+        let (cur, cq) = plant.task_pose();
         // end-effector keep-out shaping: the target is projected out of the convex keep-out sets in
         // task space (escape.rs safe_target), the GOAL-side half of avoidance (the path-side
         // half being the null-space whole-arm escape below, full_body).
