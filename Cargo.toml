@@ -1,0 +1,36 @@
+# control-ga-pid — the GA-PID control core, as a project of its own: the law in plane space, the
+# design surface that parameterizes it, and the loop that realizes it.
+#
+#   cargo test    # the design, the keepout geometry, and the loop against a Rust plant
+#
+# No engine and no `build.rs`: the loop names the `control-base` contract, so everything that
+# implements it — an engine binding, a model-based view, a test fake — is a caller's object.
+
+[package]
+name = "control-ga-pid"
+description = "The GA-PID control core of the control stack: the law in plane space, the design surface that parameterizes it, and the loop that realizes it. Pure control, no plant, no engine."
+version = "0.1.0"
+edition = "2021"
+# 1.87 is `is_multiple_of`, which the pga crate's parity checks call; the sibling crates state the
+# same floor.
+rust-version = "1.87"
+license = "MIT"
+
+# Dependencies: the two sibling crates below this one. `control-math` is the arithmetic every type
+# here is written in; `control-base` holds the two names the loop programs against — the `Plant`
+# contract it drives and the `Efference` copy it keeps. `control-model` is a DEV-dependency only
+# (the URDF chain and the PGA dynamics the tests and the probe build a plant out of): nothing in
+# `src/` names a model, and the library would not link one.
+[dependencies]
+control-math = { path = "../control-math" }
+control-base = { path = "../control-base" }
+
+[dev-dependencies]
+control-model = { path = "../control-model" }
+
+[lints.clippy]
+# The one default lint this crate does not follow, and the allowance it had as a module of `simu`
+# (whose Cargo.toml carries the full rationale): the numeric kernels index parallel arrays by a MODEL
+# count — `n`, `m`, `rows`, `cols` — not by a slice's length, so the index is the maths the loop is
+# written in and an iterator would take the bound from the slice instead.
+needless_range_loop = "allow"
