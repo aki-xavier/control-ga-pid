@@ -720,7 +720,11 @@ impl PlaneTaskLoop {
         } else {
             plant.task_jacobian()
         };
-        let q = plant.joint_positions();
+        // the CONFIGURATION STAMP, not a position: all this is used for is noticing that the metric's
+        // configuration has moved. Reading `joint_positions` here would require every plant to have a
+        // configuration — which a stance-held reduction (whose coordinates are a velocity-level
+        // subspace) does not, and which is why the contract states the weaker quantity separately
+        let q = plant.configuration_stamp();
         let needs_lam =
             self.mode == GainMode::Poles || (self.passivity && self.mode == GainMode::Physical);
         if needs_lam {

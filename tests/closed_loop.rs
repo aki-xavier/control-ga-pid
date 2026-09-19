@@ -129,3 +129,30 @@ fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
         lp.eff.report()
     );
 }
+
+/// The metric refresh is driven by the CONFIGURATION STAMP and not by a position, which is what lets a
+/// plant whose coordinates are NOT a configuration be driven at all — this machine's stance reduction
+/// has a velocity-level coordinate set and no position vector to hand over, while the loop's actual
+/// question ("has the metric's configuration moved?") it can answer.
+///
+/// `ChainPlant` counts the calls, so a revert inside `step_ff` to `joint_positions` fails here rather
+/// than silently narrowing the contract back to plants that have a configuration.
+#[test]
+fn the_metric_refresh_is_driven_by_the_stamp() {
+    let (mut plant, mut lp) = chain_home(15.0, 0.9);
+    let (cur, cq) = plant.task_pose();
+    assert_eq!(
+        plant.stamp_calls, 0,
+        "the loop asked for the stamp before it ticked"
+    );
+    let _ = lp.step(&mut plant, cur, cq, DT, &[]);
+    assert_eq!(plant.stamp_calls, 1, "one tick, one stamp");
+    let _ = lp.step(&mut plant, cur, cq, DT, &[]);
+    assert_eq!(
+        plant.stamp_calls, 2,
+        "the stamp is asked once per tick, and the loop's refresh reads it"
+    );
+    // and the stamp is what the contract says it is for a plant whose coordinates are a configuration:
+    // its position. A plant is free to answer something else — that is the point of the separation.
+    assert_eq!(plant.configuration_stamp(), plant.joint_positions());
+}

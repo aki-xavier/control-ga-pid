@@ -17,6 +17,10 @@ pub struct ChainPlant {
     pub q: Vec<f64>,
     pub v: Vec<f64>,
     pub dt: f64,
+    /// how many times the loop asked for the CONFIGURATION STAMP: the loop's metric refresh has to be
+    /// driven by it and not by a position, which is what lets a plant whose coordinates are not a
+    /// configuration (this machine's stance reduction) be driven at all
+    pub stamp_calls: usize,
 }
 
 impl ChainPlant {
@@ -30,6 +34,7 @@ impl ChainPlant {
             q: vec![0.0; n],
             v: vec![0.0; n],
             dt,
+            stamp_calls: 0,
         }
     }
 
@@ -136,6 +141,13 @@ impl Plant for ChainPlant {
 
     fn joint_velocities(&mut self) -> Vec<f64> {
         self.v.clone()
+    }
+
+    /// The chain's coordinates ARE a configuration, so its stamp is its position — which is also what
+    /// the contract's default does. It is written out here so the loop's USE of it is observable.
+    fn configuration_stamp(&mut self) -> Vec<f64> {
+        self.stamp_calls += 1;
+        self.q.clone()
     }
 
     fn mass_matrix(&mut self) -> Mat {
