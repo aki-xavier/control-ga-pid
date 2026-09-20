@@ -48,7 +48,7 @@ fn fixed_chain(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
 fn floating_home() -> FloatingChainPlant {
     let mut plant = FloatingChainPlant::new(&urdf_path(), EE, DT);
     let nu = vec![0.0; plant.nv()];
-    plant.set_state(Vec3::ZERO, Quat::IDENTITY, &home_q(), &nu);
+    plant.set_state(Vec3::ZERO, pga::rotor_identity(), &home_q(), &nu);
     plant
 }
 

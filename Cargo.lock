@@ -22,6 +22,7 @@ dependencies = [
  "control-base",
  "control-math",
  "control-model",
+ "pga",
 ]
 
 [[package]]

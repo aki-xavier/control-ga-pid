@@ -18,6 +18,7 @@ use crate::keepout::{Keepout, BODY_LINK_RADII, TOOL_REACH};
 use crate::law;
 use crate::opts::{GainMode, PlaneTaskLoopOpts};
 use crate::recruit::Recruitment;
+use crate::wrench_source::{self, RealizeCtx};
 use control_base::efference::Efference;
 use control_base::plant::{Plant, TaskMap};
 use control_math::lstsq::DampedLstsq;
@@ -401,67 +402,7 @@ impl PlaneTaskLoop {
 
     /// A full-coordinate vector in the realization's own coordinates: a bias, a weight, a velocity.
     fn read_vec(&self, hb: Option<HeldBase>, v: Vec<f64>) -> Vec<f64> {
-        match hb {
-            Some(h) => h.tail(&v),
-            None => v,
-        }
-    }
-
-    /// The base rows of a held machine: the wrench an actuator with NO torque bound must supply for the
-    /// base to stay where it is, given the joint command this tick settled on.
-    ///
-    /// Why the model terms are read again: the wrench is a statement about the WHOLE machine
-    /// (`M_bj qdd_j + h_base`) and the law's own reads were the joint block, so the coupling is not in
-    /// hand. Why the acceleration is solved here rather than designed: it is what the PLANT will do —
-    /// the same implicit solve it integrates with, `(M_jj + dt D_j) qdd_j = tau_j - h_j - D_j v_j` — so
-    /// the wrench cancels the command that was actually formed and not the one the design intended.
-    fn hold_base(&self, plant: &mut dyn Plant, h: HeldBase, tau_j: &[f64], dt: f64) -> Vec<f64> {
-        let m = plant.mass_matrix();
-        let mut hf = plant.bias_torques();
-        let g = plant.gravity_torques();
-        for i in 0..hf.len().min(g.len()) {
-            hf[i] += g[i];
-        }
-        let v = plant.joint_velocities();
-        let hj = h.tail(&hf);
-        let mut mm = h.joint_block(&m);
-        let mut r = vec![0.0; h.nj()];
-        for i in 0..h.nj() {
-            let d = if h.nb + i < self.damp.len() {
-                self.damp[h.nb + i]
-            } else {
-                0.0
-            };
-            let vi = if h.nb + i < v.len() { v[h.nb + i] } else { 0.0 };
-            r[i] = tau_j[i] - hj[i] - d * vi;
-            mm.set(i, i, mm.at(i, i) + dt * d);
-        }
-        let qdd_j = mm.solve(&r);
-        let mut w = h.wrench(&m, &hf, &qdd_j);
-        // the base rows of the viscous term the plant also subtracts: zero on a base with no joint
-        // damping, and stated rather than assumed because the caller's `damp` IS the plant's damping
-        let vb = h.head(&v);
-        let db = h.head(&self.damp);
-        for i in 0..h.nb {
-            w[i] += db[i] * vb[i];
-        }
-        // THE ACTUATOR'S OWN BOUND, and the whole difference between this machine and a welded one: at a
-        // very large bound the wrench passes through verbatim and the base cannot move; at a bound short
-        // of it the base gives way, which is a floating machine again
-        for i in 0..h.nb {
-            let lim = if i < self.u_lim.len() {
-                self.u_lim[i]
-            } else {
-                0.0
-            };
-            if w[i] > lim {
-                w[i] = lim;
-            }
-            if w[i] < -lim {
-                w[i] = -lim;
-            }
-        }
-        h.assemble(&w, tau_j)
+        wrench_source::tail_of(hb, &v)
     }
 
     fn take_efference(&mut self, plant: &mut dyn Plant) {
@@ -871,37 +812,18 @@ impl PlaneTaskLoop {
         let massm = self.read_mass(plant, hb);
         let lam = task_space_inertia(&massm, &j, nj);
         let f = lam.mul_vec(&num);
-        let mut tau = j.transposed().mul_vec(&f);
-        let bias = self.read_vec(hb, plant.bias_torques());
-        let g = self.read_vec(hb, plant.gravity_torques());
-        for i in 0..nj {
-            tau[i] += bias[i] + g[i];
-        }
-        if self.u_lim.len() == self.n {
-            let lim = match hb {
-                Some(h) => h.tail(&self.u_lim),
-                None => self.u_lim.clone(),
+        let tau_j = wrench_source::joint_demand(plant, hb, &j, &f, nj);
+        let tau = {
+            let ctx = RealizeCtx {
+                hb,
+                n: self.n,
+                nj,
+                nfree,
+                u_lim: &self.u_lim,
+                damp: &self.damp,
+                dt,
             };
-            for i in 0..nj {
-                if lim[i] > 0.0 {
-                    if tau[i] > lim[i] {
-                        tau[i] = lim[i];
-                    }
-                    if tau[i] < -lim[i] {
-                        tau[i] = -lim[i];
-                    }
-                }
-            }
-        }
-        let tau = match hb {
-            Some(h) => self.hold_base(plant, h, &tau, dt),
-            None => {
-                // a free base is written by nobody: the rows are left to the contact
-                for i in 0..nfree {
-                    tau[i] = 0.0;
-                }
-                tau
-            }
+            wrench_source::realize(plant, &ctx, &tau_j)
         };
         self.record_command(plant, &tau, dt);
         tau
@@ -1094,14 +1016,9 @@ impl PlaneTaskLoop {
             }
         }
 
-        let mut tau = j.transposed().mul_vec(&f);
-        let bias = self.read_vec(hb, plant.bias_torques());
-        let g = self.read_vec(hb, plant.gravity_torques());
         // `f` carries the ACCELERATION and `g` the weight; on a floating base the leading rows are not a
-        // torque at all, which is what `hold_base` and the free path below are about
-        for i in 0..nj {
-            tau[i] += bias[i] + g[i];
-        }
+        // torque at all, which is what the source's base end below is about
+        let mut tau = wrench_source::joint_demand(plant, hb, &j, &f, nj);
         // whole-arm escape as a null-space secondary task: tau_escape = (I - J' Lambda J M^-1) M a2.
         if self.full_body && !self.keepouts.is_empty() {
             let (dqs, vmax) = self.whole_arm_escape_dqs(plant, hb);
@@ -1135,32 +1052,17 @@ impl PlaneTaskLoop {
                 }
             }
         }
-        if self.u_lim.len() == self.n {
-            let lim = match hb {
-                Some(h) => h.tail(&self.u_lim),
-                None => self.u_lim.clone(),
+        let tau = {
+            let ctx = RealizeCtx {
+                hb,
+                n: self.n,
+                nj,
+                nfree,
+                u_lim: &self.u_lim,
+                damp: &self.damp,
+                dt,
             };
-            for i in 0..nj {
-                if lim[i] > 0.0 {
-                    if tau[i] > lim[i] {
-                        tau[i] = lim[i];
-                    }
-                    if tau[i] < -lim[i] {
-                        tau[i] = -lim[i];
-                    }
-                }
-            }
-        }
-        let tau = match hb {
-            // the base rows are the wrench that holds it, which is what makes this machine a fixed one
-            Some(h) => self.hold_base(plant, h, &tau, dt),
-            None => {
-                // a free base is written by nobody: its rows are left to the contact
-                for i in 0..nfree {
-                    tau[i] = 0.0;
-                }
-                tau
-            }
+            wrench_source::realize(plant, &ctx, &tau)
         };
         self.record_command(plant, &tau, dt);
         tau

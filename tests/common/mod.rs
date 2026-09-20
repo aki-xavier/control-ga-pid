@@ -9,8 +9,10 @@ use control_math::vec3::Vec3;
 use control_model::body_tree::{load_body_tree, BodyTree};
 use control_model::mjcf_model::MjcfModel;
 use control_model::pga_dynamics::PgaDynamicsModel;
+use control_model::pga_layer::{mat_from_rotor, quat_from_rotor};
 use control_model::tree_dynamics::TreeDynamicsModel;
 use control_model::urdf::{load_urdf_chain, UrdfChain};
+use pga::Multivector;
 use std::sync::Arc;
 
 /// A fixed-base serial chain: model terms from the PGA model, state integrated here.
@@ -251,7 +253,7 @@ pub struct FloatingChainPlant {
     pub pdyn: TreeDynamicsModel,
     /// the machine's state: the base POSE (a position and a rotation) and the joint coordinates
     pub base_p: Vec3,
-    pub base_q: Quat,
+    pub base_rotor: Multivector,
     pub q: Vec<f64>,
     /// the whole state's velocity, in the tree dynamics' own order: `[omega; v; qd]`, world frame
     pub nu: Vec<f64>,
@@ -296,7 +298,7 @@ impl FloatingChainPlant {
             pdyn: TreeDynamicsModel::new(Arc::clone(&tree)),
             tree,
             base_p: Vec3::ZERO,
-            base_q: Quat::IDENTITY,
+            base_rotor: pga::rotor_identity(),
             q: vec![0.0; nv - 6],
             nu: vec![0.0; nv],
             damp,
@@ -311,11 +313,11 @@ impl FloatingChainPlant {
     }
 
     /// Puts the machine at a state: the base pose, the joints, and the whole velocity.
-    pub fn set_state(&mut self, base_p: Vec3, base_q: Quat, q: &[f64], nu: &[f64]) {
+    pub fn set_state(&mut self, base_p: Vec3, base_rotor: Multivector, q: &[f64], nu: &[f64]) {
         assert!(q.len() == self.q.len(), "set_state joint arity");
         assert!(nu.len() == self.nv(), "set_state velocity arity");
         self.base_p = base_p;
-        self.base_q = base_q;
+        self.base_rotor = base_rotor;
         self.q.copy_from_slice(q);
         self.nu.copy_from_slice(nu);
     }
@@ -325,13 +327,13 @@ impl FloatingChainPlant {
         let n = self.nv();
         for _ in 0..n_sub {
             let t = tau.to_vec();
-            let m = self.pdyn.mass_matrix(self.base_p, self.base_q, &self.q);
+            let m = self.pdyn.mass_matrix(self.base_p, self.base_rotor, &self.q);
             let zero = vec![0.0; n];
             let q = self.q.clone();
             let nu = self.nu.clone();
             let rg = self
                 .pdyn
-                .inverse_dynamics(self.base_p, self.base_q, &q, &nu, &zero);
+                .inverse_dynamics(self.base_p, self.base_rotor, &q, &nu, &zero);
             let mut rhs = vec![0.0; n];
             for i in 0..n {
                 rhs[i] = t[i] - rg[i] - self.damp[i] * self.nu[i];
@@ -352,31 +354,18 @@ impl FloatingChainPlant {
                 .base_p
                 .add(Vec3::new(self.nu[3], self.nu[4], self.nu[5]).scale(self.dt));
             let w = Vec3::new(self.nu[0], self.nu[1], self.nu[2]);
-            let dq = Quat {
-                w: 0.0,
-                x: w.x,
-                y: w.y,
-                z: w.z,
+            let wn = w.norm();
+            if wn > 1e-12 {
+                let inc = pga::rotor([w.x / wn, w.y / wn, w.z / wn], wn * self.dt);
+                self.base_rotor = inc.gp(self.base_rotor);
             }
-            .mul(self.base_q);
-            let mut nq = Quat {
-                w: self.base_q.w + 0.5 * self.dt * dq.w,
-                x: self.base_q.x + 0.5 * self.dt * dq.x,
-                y: self.base_q.y + 0.5 * self.dt * dq.y,
-                z: self.base_q.z + 0.5 * self.dt * dq.z,
-            };
-            let norm = (nq.w * nq.w + nq.x * nq.x + nq.y * nq.y + nq.z * nq.z).sqrt();
-            nq.w /= norm;
-            nq.x /= norm;
-            nq.y /= norm;
-            nq.z /= norm;
-            self.base_q = nq;
         }
     }
 
     /// The cached world frames of the current state.
     fn frames(&mut self) -> (Vec<Vec3>, Vec<Mat>) {
-        self.pdyn.refresh_frames(self.base_p, self.base_q, &self.q);
+        self.pdyn
+            .refresh_frames(self.base_p, self.base_rotor, &self.q);
         let (o, r) = self.pdyn.frames_now();
         (o.to_vec(), r.to_vec())
     }
@@ -443,7 +432,7 @@ impl Plant for FloatingChainPlant {
     fn joint_positions(&mut self) -> Vec<f64> {
         // the coordinate reading of the same 12 coordinates the velocities live in: the base's position
         // and the base rotation's rotvec, then the joints
-        let rv = self.base_q.to_mat3().to_rotvec();
+        let rv = mat_from_rotor(&self.base_rotor).to_rotvec();
         let mut out = vec![
             self.base_p.x,
             self.base_p.y,
@@ -464,14 +453,15 @@ impl Plant for FloatingChainPlant {
     /// quaternion rides along and the metric's refresh notices a base that turned.
     fn configuration_stamp(&mut self) -> Vec<f64> {
         self.stamp_calls += 1;
+        let q = quat_from_rotor(self.base_rotor);
         let mut out = vec![
             self.base_p.x,
             self.base_p.y,
             self.base_p.z,
-            self.base_q.w,
-            self.base_q.x,
-            self.base_q.y,
-            self.base_q.z,
+            q.w,
+            q.x,
+            q.y,
+            q.z,
         ];
         out.extend_from_slice(&self.q);
         out
@@ -479,17 +469,18 @@ impl Plant for FloatingChainPlant {
 
     fn mass_matrix(&mut self) -> Mat {
         let q = self.q.clone();
-        self.pdyn.mass_matrix(self.base_p, self.base_q, &q)
+        self.pdyn.mass_matrix(self.base_p, self.base_rotor, &q)
     }
 
     fn bias_torques(&mut self) -> Vec<f64> {
         let (q, nu) = (self.q.clone(), self.nu.clone());
-        self.pdyn.bias_torques(self.base_p, self.base_q, &q, &nu)
+        self.pdyn
+            .bias_torques(self.base_p, self.base_rotor, &q, &nu)
     }
 
     fn gravity_torques(&mut self) -> Vec<f64> {
         let q = self.q.clone();
-        self.pdyn.gravity_torques(self.base_p, self.base_q, &q)
+        self.pdyn.gravity_torques(self.base_p, self.base_rotor, &q)
     }
 
     fn frame_pose(&mut self, name: &str) -> (Vec3, Quat) {
