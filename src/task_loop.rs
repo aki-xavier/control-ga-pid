@@ -1,7 +1,15 @@
 // task_loop.rs — one task-space law, two readings: f = Lambda num in Poles, f = num in Physical,
 // then tau = J' f + C q_dot + g. `f` carries the ACCELERATION and `g` the weight; the error is
 // world axes about the tip, in [v; w] order.
+//
+// THE BASE END decides what that reading is written in. A welded machine has no base in its state and
+// the law spans its joints; a floating one whose base rows `u_lim` bounds is read through the joint
+// block of M (base.rs) and its base rows come back as the wrench the hold costs, clamped by that same
+// bound — so a very large value there is exactly the welded machine's command; a floating one whose
+// base rows nothing bounds is read through the free metric over the whole machine, and the base is
+// written by nobody.
 
+use crate::base::HeldBase;
 use crate::escape::TaskAvoidance;
 use crate::gains::PlaneGains;
 use crate::impedance::ImpedanceChannel;
@@ -12,9 +20,9 @@ use crate::opts::{GainMode, PlaneTaskLoopOpts};
 use crate::recruit::Recruitment;
 use control_base::efference::Efference;
 use control_base::plant::{Plant, TaskMap};
+use control_math::lstsq::DampedLstsq;
 use control_math::mat::Mat;
 use control_math::quat::Quat;
-use control_math::lstsq::DampedLstsq;
 use control_math::vec3::Vec3;
 
 const DBG_INTERNAL: bool = false;
@@ -87,6 +95,9 @@ pub struct PlaneTaskLoop {
     eff_dt: f64,
     /// structure_checked gates the once-per-loop plant-structure report (`check_structure`).
     structure_checked: bool,
+    /// base_rows is the base's coordinate count, cached from that same read: a `PlantStructure` is
+    /// owned data, and a realization must not ask the plant for it every tick.
+    base_rows: usize,
 }
 
 impl PlaneTaskLoop {
@@ -153,6 +164,7 @@ impl PlaneTaskLoop {
             eff_rg: Vec::new(),
             eff_dt: 0.0,
             structure_checked: false,
+            base_rows: 0,
         };
         // joint torques, so the unit is N.m (the type's default is "N")
         lp.eff.unit = "N.m".to_string();
@@ -238,6 +250,9 @@ impl PlaneTaskLoop {
         }
         self.structure_checked = true;
         let s = plant.structure();
+        self.base_rows = if s.base_is_a_state() { s.base_dof } else { 0 };
+        let (held, nfree) = self.base_split();
+        let nb = held.map(|h| h.nb).unwrap_or(0);
         if s.dof != self.n {
             eprintln!(
                 "simu: this loop was built for {} generalized coordinates and its plant declares {} \
@@ -245,23 +260,66 @@ impl PlaneTaskLoop {
                 self.n, s.dof
             );
         }
-        if !s.all_driven() {
-            let free = s.actuated.iter().filter(|a| !**a).count();
+        if s.actuated.len() != s.dof {
             eprintln!(
-                "simu: the plant declares {free} undriven generalized coordinate(s), so a wrench \
+                "simu: the plant's `actuated` table carries {} entries for a dof of {}, so which rows \
+                 are driven is not stated for all of them",
+                s.actuated.len(),
+                s.dof
+            );
+        }
+        // A HELD base's rows are undriven by actuation and written by this loop all the same — they are
+        // the constraint wrench — so they are not the undriven rows this warning is about.
+        let free_rows = s
+            .actuated
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| !**a && *i >= nb)
+            .count();
+        if free_rows > 0 {
+            eprintln!(
+                "simu: the plant declares {free_rows} undriven generalized coordinate(s), so a wrench \
                  demand is not directly realizable — tau = J' f + bias assumes every coordinate is \
                  driven, and an undriven one's row is a constraint the environment must satisfy"
             );
         }
         if s.base_is_a_state() {
-            eprintln!(
-                "simu: the plant's base is a STATE (base_dof = {}), so this loop's direct map is \
-                 not the whole realization — the base rows must be sourced by contact, which the \
-                 loop does not do",
-                s.base_dof
-            );
+            let bound = |i: usize| {
+                if i < self.u_lim.len() {
+                    self.u_lim[i]
+                } else {
+                    0.0
+                }
+            };
+            let bounded = (0..s.base_dof).filter(|i| bound(*i) > 0.0).count();
+            if bounded == s.base_dof {
+                // the rows this loop writes at the base are a wrench about the root origin, so a leading
+                // block that is not six coordinates is not a pose and cannot be read as one
+                if s.base_dof != 6 {
+                    eprintln!(
+                        "simu: this loop holds the base (`u_lim` bounds all {} of its rows) and the \
+                         plant's leading {} coordinates are its base (base_dof), so the rows written \
+                         there are a wrench whose pose convention is not stated",
+                        s.base_dof, s.base_dof
+                    );
+                }
+            } else if bounded == 0 {
+                eprintln!(
+                    "simu: the plant's base is a STATE (base_dof = {}) and this loop's `u_lim` bounds \
+                     none of its rows, so no actuator is declared there: the rows it returns at the base \
+                     are zero and the base's wrench must be sourced by contact, which the loop does not do",
+                    s.base_dof
+                );
+            } else {
+                eprintln!(
+                    "simu: this loop's `u_lim` bounds {bounded} of the base's {} rows (base_dof) and \
+                     leaves the rest to nobody, and a base is held in all of its directions or none of \
+                     them — this loop reads it as having no actuator there",
+                    s.base_dof
+                );
+            }
         }
-        if !s.braced() {
+        if !s.braced() && nfree > 0 {
             eprintln!(
                 "simu: nothing holds the machine in six directions (no welded base and no welded \
                  contact), so a wrench demand written at a task frame has no source"
@@ -286,6 +344,124 @@ impl PlaneTaskLoop {
                 s.task_map.name()
             );
         }
+    }
+
+    /// The base end a realization works with: the split whose base rows this loop HOLDS (Some when the
+    /// plant's base is a state and `u_lim` bounds all of its rows), and how many leading rows it writes
+    /// NOTHING at — a base with no actuator declared, whose wrench has to come from contact. The two are
+    /// exclusive, and both are 0 on a welded machine, whose realization is the whole plant.
+    ///
+    /// Why the DECLARATION is `u_lim` and not a second flag: those rows already are the actuator bound,
+    /// and one number has to answer for both. Zero (or a table that does not reach the base) is no
+    /// actuator at all, a very large value is one nothing bounds, and the same arithmetic reads either;
+    /// a bound in SOME base directions and none in others is a machine this loop cannot read, so it
+    /// reads it as having no actuator and says so once (`check_structure`).
+    fn base_split(&self) -> (Option<HeldBase>, usize) {
+        if self.base_rows == 0 {
+            return (None, 0);
+        }
+        let bound = |i: usize| {
+            if i < self.u_lim.len() {
+                self.u_lim[i]
+            } else {
+                0.0
+            }
+        };
+        let held = (0..self.base_rows).all(|i| bound(i) > 0.0);
+        if held {
+            (Some(HeldBase::new(self.base_rows, self.n)), 0)
+        } else {
+            (None, self.base_rows)
+        }
+    }
+
+    /// The task Jacobian this tick's law is written in: the whole machine's, or the joint columns a
+    /// held base leaves, because a base that does not move contributes no task motion.
+    fn read_jac(&self, plant: &mut dyn Plant, full: bool, hb: Option<HeldBase>) -> Mat {
+        let j = if full {
+            plant.task_full_jacobian()
+        } else {
+            plant.task_jacobian()
+        };
+        match hb {
+            Some(h) => h.joint_cols(&j),
+            None => j,
+        }
+    }
+
+    /// The mass matrix this tick's law is written in: the whole one, or the joint block a held base
+    /// leaves behind (its own rows have no acceleration for the inertia to multiply).
+    fn read_mass(&self, plant: &mut dyn Plant, hb: Option<HeldBase>) -> Mat {
+        let m = plant.mass_matrix();
+        match hb {
+            Some(h) => h.joint_block(&m),
+            None => m,
+        }
+    }
+
+    /// A full-coordinate vector in the realization's own coordinates: a bias, a weight, a velocity.
+    fn read_vec(&self, hb: Option<HeldBase>, v: Vec<f64>) -> Vec<f64> {
+        match hb {
+            Some(h) => h.tail(&v),
+            None => v,
+        }
+    }
+
+    /// The base rows of a held machine: the wrench an actuator with NO torque bound must supply for the
+    /// base to stay where it is, given the joint command this tick settled on.
+    ///
+    /// Why the model terms are read again: the wrench is a statement about the WHOLE machine
+    /// (`M_bj qdd_j + h_base`) and the law's own reads were the joint block, so the coupling is not in
+    /// hand. Why the acceleration is solved here rather than designed: it is what the PLANT will do —
+    /// the same implicit solve it integrates with, `(M_jj + dt D_j) qdd_j = tau_j - h_j - D_j v_j` — so
+    /// the wrench cancels the command that was actually formed and not the one the design intended.
+    fn hold_base(&self, plant: &mut dyn Plant, h: HeldBase, tau_j: &[f64], dt: f64) -> Vec<f64> {
+        let m = plant.mass_matrix();
+        let mut hf = plant.bias_torques();
+        let g = plant.gravity_torques();
+        for i in 0..hf.len().min(g.len()) {
+            hf[i] += g[i];
+        }
+        let v = plant.joint_velocities();
+        let hj = h.tail(&hf);
+        let mut mm = h.joint_block(&m);
+        let mut r = vec![0.0; h.nj()];
+        for i in 0..h.nj() {
+            let d = if h.nb + i < self.damp.len() {
+                self.damp[h.nb + i]
+            } else {
+                0.0
+            };
+            let vi = if h.nb + i < v.len() { v[h.nb + i] } else { 0.0 };
+            r[i] = tau_j[i] - hj[i] - d * vi;
+            mm.set(i, i, mm.at(i, i) + dt * d);
+        }
+        let qdd_j = mm.solve(&r);
+        let mut w = h.wrench(&m, &hf, &qdd_j);
+        // the base rows of the viscous term the plant also subtracts: zero on a base with no joint
+        // damping, and stated rather than assumed because the caller's `damp` IS the plant's damping
+        let vb = h.head(&v);
+        let db = h.head(&self.damp);
+        for i in 0..h.nb {
+            w[i] += db[i] * vb[i];
+        }
+        // THE ACTUATOR'S OWN BOUND, and the whole difference between this machine and a welded one: at a
+        // very large bound the wrench passes through verbatim and the base cannot move; at a bound short
+        // of it the base gives way, which is a floating machine again
+        for i in 0..h.nb {
+            let lim = if i < self.u_lim.len() {
+                self.u_lim[i]
+            } else {
+                0.0
+            };
+            if w[i] > lim {
+                w[i] = lim;
+            }
+            if w[i] < -lim {
+                w[i] = -lim;
+            }
+        }
+        h.assemble(&w, tau_j)
     }
 
     fn take_efference(&mut self, plant: &mut dyn Plant) {
@@ -379,6 +555,12 @@ impl PlaneTaskLoop {
         dt: f64,
     ) -> Vec<f64> {
         self.take_efference(plant);
+        // THE BASE END: a joint-space design spans EVERY coordinate, so a bounded base is commanded like a
+        // joint — the full M then makes its rows the wrench that realizes the commanded base
+        // acceleration, the coupling to the joints included, and a commanded pose with no acceleration is
+        // what holds the base. `u_lim`'s own base rows bound that wrench, and a base nobody bounds is
+        // written by nobody, so its rows come out zero.
+        let (_, nfree) = self.base_split();
         let m = self.m;
         let q = plant.joint_positions();
         let v = plant.joint_velocities();
@@ -409,7 +591,8 @@ impl PlaneTaskLoop {
         let mut tau = mm.mul_vec(&a);
         let bias = plant.bias_torques();
         let g = plant.gravity_torques();
-        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
+        // the rows are `M a + h` over EVERY coordinate, so on a floating base the leading ones are the
+        // wrench about the root origin that the commanded base acceleration costs — not a torque
         for i in 0..self.n {
             tau[i] += bias[i] + g[i];
             if i < self.damp.len() && self.damp[i] != 0.0 {
@@ -438,6 +621,8 @@ impl PlaneTaskLoop {
             }
         }
         if self.u_lim.len() == self.n {
+            // row by row: the joints are bounded by their own entries, and a floating machine's leading
+            // rows by the base actuator's (which is why a very large value there is a weld)
             for i in 0..self.n {
                 if self.u_lim[i] > 0.0 {
                     if tau[i] > self.u_lim[i] {
@@ -449,13 +634,25 @@ impl PlaneTaskLoop {
                 }
             }
         }
+        for i in 0..nfree {
+            tau[i] = 0.0;
+        }
         self.record_command(plant, &tau, dt);
         tau
     }
 
     /// Samples the chain plus quarter points; the worst keep-out escape per point is mapped (damped LS) into `escape_dq`.
-    fn whole_arm_escape_dqs(&mut self, plant: &mut dyn Plant) -> (Vec<f64>, f64) {
-        let n = self.n;
+    ///
+    /// The solve is written in whatever coordinates the realization is: on a held base the base's
+    /// columns are dropped, because a base that cannot move cannot escape anything — its rows of the
+    /// readout stay zero, so `escape_dq` keeps the machine's own length.
+    fn whole_arm_escape_dqs(
+        &mut self,
+        plant: &mut dyn Plant,
+        hb: Option<HeldBase>,
+    ) -> (Vec<f64>, f64) {
+        let off = hb.map(|h| h.nb).unwrap_or(0);
+        let n = self.n - off;
         let mut vmax = 0.0;
         let mut pts: Vec<Vec3> = Vec::new();
         let mut jjs: Vec<Mat> = Vec::new();
@@ -471,12 +668,12 @@ impl PlaneTaskLoop {
             TaskMap::Frame(f) => Some(f.clone()),
             TaskMap::Point(_) => None,
         };
-        let nb = bodies.len().min(n);
-        for (i, name) in bodies.iter().enumerate().take(nb) {
+        let nbp = bodies.len().min(n);
+        for (i, name) in bodies.iter().enumerate().take(nbp) {
             let (p, rot) = plant.body_frame(name);
             pts.push(p);
             jjs.push(plant.body_jacobian(name));
-            if i + 1 == nb {
+            if i + 1 == nbp {
                 if let Some(f) = &tip_frame {
                     let u = rot.mul_vec3(Vec3::new(1.0, 0.0, 0.0)).normalized();
                     pts.push(p.add(u.scale(TOOL_REACH)));
@@ -543,7 +740,7 @@ impl PlaneTaskLoop {
                 let mut row = vec![0.0; n];
                 for r in 0..3 {
                     for cc in 0..n {
-                        row[cc] = ji.at(r, cc);
+                        row[cc] = ji.at(r, off + cc);
                     }
                     rowmat.push(row.clone());
                     es.push(best.x);
@@ -559,21 +756,28 @@ impl PlaneTaskLoop {
         }
         // recruitment acts on the DEMAND, not through the solve's metric: uniform prices leave it bit for bit
         if self.recruit {
-            let w = self.recruit_weights();
+            let w = self.recruit_weights(hb);
             for (i, d) in dqs.iter_mut().enumerate() {
                 *d *= w.get(i).copied().unwrap_or(1.0);
             }
         }
-        self.escape_dq = dqs.clone();
+        self.escape_dq = match hb {
+            Some(h) => h.assemble(&vec![0.0; h.nb], &dqs),
+            None => dqs.clone(),
+        };
         (dqs, vmax)
     }
 
     /// The escape's price table from `u_lim` (effort limit = unit size); a wrong-length `u_lim` gives unit weights.
-    fn recruit_weights(&self) -> Vec<f64> {
+    fn recruit_weights(&self, hb: Option<HeldBase>) -> Vec<f64> {
+        let n = self.n - hb.map(|h| h.nb).unwrap_or(0);
         let lim: Vec<f64> = if self.u_lim.len() == self.n {
-            self.u_lim.clone()
+            match hb {
+                Some(h) => h.tail(&self.u_lim),
+                None => self.u_lim.clone(),
+            }
         } else {
-            vec![1.0; self.n]
+            vec![1.0; n]
         };
         let mut r = Recruitment::new(lim);
         r.on = true;
@@ -600,12 +804,13 @@ impl PlaneTaskLoop {
     }
 
     /// The cached shaping matrix's diagonal when valid, else the full-pose one.
-    fn plane_masses(&self, plant: &mut dyn Plant) -> Vec<f64> {
+    fn plane_masses(&self, plant: &mut dyn Plant, hb: Option<HeldBase>) -> Vec<f64> {
         if self.lam.rows == self.m && self.lam.cols == self.m {
             return self.lam.diag();
         }
-        let j6 = plant.task_full_jacobian();
-        effective_task_mass(&plant.mass_matrix(), &j6, self.n)
+        let j6 = self.read_jac(plant, true, hb);
+        let massm = self.read_mass(plant, hb);
+        effective_task_mass(&massm, &j6, self.n - hb.map(|h| h.nb).unwrap_or(0))
     }
 
     /// Multi-point reading of the same law: three planes per point, `cur` in the stacked task Jacobian's row order.
@@ -618,7 +823,9 @@ impl PlaneTaskLoop {
     ) -> Vec<f64> {
         self.take_efference(plant);
         let m = self.m;
-        let j = plant.task_jacobian();
+        let (hb, nfree) = self.base_split();
+        let nj = self.n - hb.map(|h| h.nb).unwrap_or(0);
+        let j = self.read_jac(plant, false, hb);
         let mut e = vec![0.0; m];
         for i in 0..m {
             let p = i / 3;
@@ -643,7 +850,8 @@ impl PlaneTaskLoop {
             }
             self.i_acc[i] += e[i] * dt;
         }
-        let v_task = j.mul_vec(&plant.joint_velocities());
+        let vj = self.read_vec(hb, plant.joint_velocities());
+        let v_task = j.mul_vec(&vj);
         let mut num = vec![0.0; m];
         for i in 0..m {
             let (kv, dv) = self.per_plane_kd(i);
@@ -660,28 +868,41 @@ impl PlaneTaskLoop {
                 e[2], v_task[2], num[2]
             );
         }
-        let massm = plant.mass_matrix();
-        let lam = task_space_inertia(&massm, &j, self.n);
+        let massm = self.read_mass(plant, hb);
+        let lam = task_space_inertia(&massm, &j, nj);
         let f = lam.mul_vec(&num);
         let mut tau = j.transposed().mul_vec(&f);
-        let bias = plant.bias_torques();
-        let g = plant.gravity_torques();
-        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
-        for i in 0..self.n {
+        let bias = self.read_vec(hb, plant.bias_torques());
+        let g = self.read_vec(hb, plant.gravity_torques());
+        for i in 0..nj {
             tau[i] += bias[i] + g[i];
         }
         if self.u_lim.len() == self.n {
-            for i in 0..self.n {
-                if self.u_lim[i] > 0.0 {
-                    if tau[i] > self.u_lim[i] {
-                        tau[i] = self.u_lim[i];
+            let lim = match hb {
+                Some(h) => h.tail(&self.u_lim),
+                None => self.u_lim.clone(),
+            };
+            for i in 0..nj {
+                if lim[i] > 0.0 {
+                    if tau[i] > lim[i] {
+                        tau[i] = lim[i];
                     }
-                    if tau[i] < -self.u_lim[i] {
-                        tau[i] = -self.u_lim[i];
+                    if tau[i] < -lim[i] {
+                        tau[i] = -lim[i];
                     }
                 }
             }
         }
+        let tau = match hb {
+            Some(h) => self.hold_base(plant, h, &tau, dt),
+            None => {
+                // a free base is written by nobody: the rows are left to the contact
+                for i in 0..nfree {
+                    tau[i] = 0.0;
+                }
+                tau
+            }
+        };
         self.record_command(plant, &tau, dt);
         tau
     }
@@ -712,14 +933,12 @@ impl PlaneTaskLoop {
     ) -> Vec<f64> {
         self.take_efference(plant);
         let m = self.m;
+        let (hb, nfree) = self.base_split();
+        let nj = self.n - hb.map(|h| h.nb).unwrap_or(0);
         // the applied co-activation ramps toward the command once per tick, before any gain is read
         let coact_cmd = self.impedance.command;
         self.impedance.advance(coact_cmd, dt);
-        let j = if m == 6 {
-            plant.task_full_jacobian()
-        } else {
-            plant.task_jacobian()
-        };
+        let j = self.read_jac(plant, m == 6, hb);
         // the CONFIGURATION STAMP, not a position: all this is used for is noticing that the metric's
         // configuration has moved. Reading `joint_positions` here would require every plant to have a
         // configuration — which a stance-held reduction (whose coordinates are a velocity-level
@@ -744,8 +963,8 @@ impl PlaneTaskLoop {
                 }
             }
             if refresh {
-                let massm = plant.mass_matrix();
-                self.lam = task_space_inertia(&massm, &j, self.n);
+                let massm = self.read_mass(plant, hb);
+                self.lam = task_space_inertia(&massm, &j, nj);
                 self.q_ref = q.clone();
             }
         }
@@ -768,8 +987,8 @@ impl PlaneTaskLoop {
             e[4] = rot.y;
             e[5] = rot.z;
         }
-        let v_task = j.mul_vec(&plant.joint_velocities());
-        let vj = plant.joint_velocities();
+        let vj = self.read_vec(hb, plant.joint_velocities());
+        let v_task = j.mul_vec(&vj);
 
         // contact schedule: soften the aligned planes towards k * k_ratio, faded with f_tau.
         if self.k_ratio < 1.0 {
@@ -822,7 +1041,7 @@ impl PlaneTaskLoop {
         let mut dv_eff = vec![0.0; m];
         let mut masses: Vec<f64> = Vec::new();
         if self.passivity && self.mode == GainMode::Physical {
-            masses = self.plane_masses(plant);
+            masses = self.plane_masses(plant, hb);
         }
         for i in 0..m {
             let (_, dv) = self.per_plane_kd(i);
@@ -835,11 +1054,15 @@ impl PlaneTaskLoop {
         // plane-space damping mapping: corr = J M^-1 (D q_dot), added to the numerator before shaping.
         let mut corr = vec![0.0; m];
         if self.damp.len() == self.n {
-            let mut dqv = vec![0.0; self.n];
-            for i in 0..self.n {
-                dqv[i] = self.damp[i] * vj[i];
+            let dj = match hb {
+                Some(h) => h.tail(&self.damp),
+                None => self.damp.clone(),
+            };
+            let mut dqv = vec![0.0; nj];
+            for i in 0..nj {
+                dqv[i] = dj[i] * vj[i];
             }
-            let massm = plant.mass_matrix();
+            let massm = self.read_mass(plant, hb);
             let c3 = j.mul_vec(&massm.solve(&dqv));
             corr[..m].copy_from_slice(&c3[..m]);
         }
@@ -872,21 +1095,22 @@ impl PlaneTaskLoop {
         }
 
         let mut tau = j.transposed().mul_vec(&f);
-        let bias = plant.bias_torques();
-        let g = plant.gravity_torques();
-        // `f` carries the ACCELERATION and `g` the weight; on a floating base these leading rows are the CONTACT'S DEMAND
-        for i in 0..self.n {
+        let bias = self.read_vec(hb, plant.bias_torques());
+        let g = self.read_vec(hb, plant.gravity_torques());
+        // `f` carries the ACCELERATION and `g` the weight; on a floating base the leading rows are not a
+        // torque at all, which is what `hold_base` and the free path below are about
+        for i in 0..nj {
             tau[i] += bias[i] + g[i];
         }
         // whole-arm escape as a null-space secondary task: tau_escape = (I - J' Lambda J M^-1) M a2.
         if self.full_body && !self.keepouts.is_empty() {
-            let (dqs, vmax) = self.whole_arm_escape_dqs(plant);
+            let (dqs, vmax) = self.whole_arm_escape_dqs(plant, hb);
             let (kv, dv) = self.per_plane_kd(0);
-            let mut a2 = vec![0.0; self.n];
-            for i in 0..self.n {
+            let mut a2 = vec![0.0; nj];
+            for i in 0..nj {
                 a2[i] = kv * dqs[i] - dv * vj[i];
             }
-            let massm = plant.mass_matrix();
+            let massm = self.read_mass(plant, hb);
             let ma2 = massm.mul_vec(&a2);
             if self.escape_priority {
                 // task-priority: the escape acts in FULL joint space, the task fading as wt = 1 - vmax/0.02
@@ -895,34 +1119,49 @@ impl PlaneTaskLoop {
                 } else {
                     1.0
                 };
-                for i in 0..self.n {
+                for i in 0..nj {
                     tau[i] = wt * tau[i] + ma2[i];
                 }
             } else {
                 // metric-orthogonal: the escape cannot fight the task, so it only holds the boundary
                 let mut lam_e = self.lam.clone();
                 if lam_e.rows != j.rows {
-                    lam_e = task_space_inertia(&massm, &j, self.n);
+                    lam_e = task_space_inertia(&massm, &j, nj);
                 }
                 let la2 = lam_e.mul_vec(&j.mul_vec(&a2));
                 let back = j.transposed().mul_vec(&la2);
-                for i in 0..self.n {
+                for i in 0..nj {
                     tau[i] += ma2[i] - back[i];
                 }
             }
         }
         if self.u_lim.len() == self.n {
-            for i in 0..self.n {
-                if self.u_lim[i] > 0.0 {
-                    if tau[i] > self.u_lim[i] {
-                        tau[i] = self.u_lim[i];
+            let lim = match hb {
+                Some(h) => h.tail(&self.u_lim),
+                None => self.u_lim.clone(),
+            };
+            for i in 0..nj {
+                if lim[i] > 0.0 {
+                    if tau[i] > lim[i] {
+                        tau[i] = lim[i];
                     }
-                    if tau[i] < -self.u_lim[i] {
-                        tau[i] = -self.u_lim[i];
+                    if tau[i] < -lim[i] {
+                        tau[i] = -lim[i];
                     }
                 }
             }
         }
+        let tau = match hb {
+            // the base rows are the wrench that holds it, which is what makes this machine a fixed one
+            Some(h) => self.hold_base(plant, h, &tau, dt),
+            None => {
+                // a free base is written by nobody: its rows are left to the contact
+                for i in 0..nfree {
+                    tau[i] = 0.0;
+                }
+                tau
+            }
+        };
         self.record_command(plant, &tau, dt);
         tau
     }

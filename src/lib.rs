@@ -1,5 +1,6 @@
 // control-ga-pid — the GA-PID law in plane space, the design surface it is read from, and the loop that runs it.
 
+pub mod base;
 pub mod box_ko;
 pub mod budget;
 pub mod class;

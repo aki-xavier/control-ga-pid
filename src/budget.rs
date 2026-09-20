@@ -1,8 +1,8 @@
 // budget.rs — MotionBudget and the demand scan; the actuator budget |g_i + wn^2 (J' Lambda u)_i| <= u_lim_i bounds wn.
 
 use crate::design::{wn_for_settling, zeta_from_overshoot};
-use control_math::mat::Mat;
 use control_math::lstsq::DampedLstsq;
+use control_math::mat::Mat;
 use std::f64::consts::PI;
 
 /// The window the budgets leave open: wn_lo from settling, wn_hi from the actuator scan; feasible = wn_hi >= wn_lo.

@@ -1,7 +1,7 @@
 # control-ga-pid — the GA-PID control core, as a project of its own: the law in plane space, the
 # design surface that parameterizes it, and the loop that realizes it.
 #
-#   cargo test    # the design, the keepout geometry, and the loop against a Rust plant
+#   mbx test    # the design, the keepout geometry, and the loop against a Rust plant
 #
 # No engine and no `build.rs`: the loop names the `control-base` contract, so everything that
 # implements it — an engine binding, a model-based view, a test fake — is a caller's object.

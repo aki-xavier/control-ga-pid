@@ -40,7 +40,11 @@ pub struct IntegralOpts {
     pub i_deadband: f64,
     /// true disables step_joint's conditional anti-windup; false freezes a saturated joint's accumulator.
     pub i_anti_windup_off: bool,
-    /// per-joint output clamp, applied after the bias and gravity terms
+    /// per-coordinate output clamp, applied after the bias and gravity terms. Why it carries the base
+    /// end too: on a floating machine (a plant whose leading `base_dof` coordinates are its base pose)
+    /// these leading rows are that BASE ACTUATOR's bound and not a joint's — all of them zero or absent
+    /// leaves the base unwritten, the free reading, and a very large value is an actuator nothing bounds,
+    /// which is what makes the machine a fixed one (base.rs).
     pub u_lim: Vec<f64>,
 }
 

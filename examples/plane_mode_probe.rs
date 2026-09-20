@@ -1,6 +1,6 @@
 // Probe of K = Lambda diag(wn^2): the coupling, and when per-plane placement stops being safe.
 // K is symmetric only while the wn^2 diagonal is uniform; a split makes it an energy pump.
-// Run: cargo run --release --example plane_mode_probe
+// Run: mbx run --release --example plane_mode_probe
 
 use control_ga_pid::inertia::task_space_inertia;
 use control_math::mat::Mat;
