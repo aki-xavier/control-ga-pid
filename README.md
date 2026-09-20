@@ -66,10 +66,21 @@ both siblings below this crate; `control-model` is a dev-dependency only. No `bu
 ## Building
 
 ```sh
-mbx test
+make test
 mbx clippy --all-targets -- -D warnings
 mbx run --release --example plane_mode_probe
 ```
+
+`make test` runs the suite (`mbx test`) and then the comment rules over the tree, so the lint is not a
+step anyone has to remember. The rules themselves are `../comment-why`, a sibling project that reads
+text and asks the compiler for nothing — which is what lets the check also be an ordinary test,
+`tests/comment_why.rs`, and the reason it needs no nightly and no plugin. It decides three shapes:
+process narration and filler, a comment line whose content words are all in the code below it, and a
+short doc comment that re-says the item's own name. The rest goes to a reader, because why against what
+is a reading of a sentence and a test does not read; what that crate adds for the rest is a local
+approximation — a comment that is long, marker-free and mostly the code's own words — which `make test`
+prints as advice and never fails on. A comment the rule should keep as it is is recorded in that test's
+`TOLERATED` with the reason, and a record that no longer matches a flagged comment fails the test.
 
 `tests/common/mod.rs` is the engine-free rigid-body plant the closed-loop tests drive: the same ODE
 an engine-backed plant integrates, with the engine's world mirror left out. It holds both shapes of

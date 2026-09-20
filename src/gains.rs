@@ -1,6 +1,8 @@
 // gains.rs — PlaneGains, one plane's gain triple; the placement that makes it is design.rs.
 
-/// PlaneGains is one plane's (kappa_p, kappa_d, kappa_i) triple.
+/// The law reads this triple as given: a non-positive `kappa_p` arrives unclamped, so a plane with no
+/// authority over its own response shows it in the response rather than hidden as a small gain —
+/// `design.rs` reports it, once per process.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlaneGains {
     pub kappa_p: f64,
