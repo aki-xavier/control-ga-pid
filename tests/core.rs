@@ -290,7 +290,7 @@ fn home_model() -> (Mat, Mat, Vec<f64>, Vec<f64>, Vec<String>) {
     let q = home_q();
     let m = pdyn.mass_matrix(&q);
     let (o, r) = chain.fk(&q);
-    let tip = chain.tip_pose(&o, &r).0;
+    let tip = chain.tip_position(&o, &r);
     let j = chain.point_jacobian(&o, &r, tip);
     let g = pdyn.gravity_torques(&q);
     let md = m.diag();

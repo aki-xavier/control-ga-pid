@@ -2,14 +2,13 @@
 
 #![allow(dead_code)] // each integration test compiles this module on its own
 
-use control_base::plant::{Plant, PlantStructure, TaskMap};
+use control_base::plant::{motor_of_rotor, Plant, PlantStructure, TaskMap};
 use control_math::mat::Mat;
-use control_math::quat::Quat;
 use control_math::vec3::Vec3;
 use control_model::body_tree::{load_body_tree, BodyTree};
 use control_model::mjcf_model::MjcfModel;
 use control_model::pga_dynamics::PgaDynamicsModel;
-use control_model::pga_layer::{mat_from_rotor, quat_from_rotor};
+use control_model::pga_layer::{mat_from_rotor, quat_from_rotor, rotor_from_mat};
 use control_model::tree_dynamics::TreeDynamicsModel;
 use control_model::urdf::{load_urdf_chain, UrdfChain};
 use pga::Multivector;
@@ -171,24 +170,30 @@ impl Plant for ChainPlant {
         self.pdyn.gravity_torques(&q)
     }
 
-    fn frame_pose(&mut self, name: &str) -> (Vec3, Quat) {
+    fn frame_motor(&mut self, name: &str) -> Multivector {
         let q = self.q.clone();
         self.pdyn.frames(&q);
         if name == TASK_FRAME {
-            return self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r);
+            return self.chain.tip_motor(&self.pdyn.fr_o, &self.pdyn.fr_r);
         }
         let i = self.body_index(name);
-        (
-            self.pdyn.fr_o[i],
-            Quat::from_mat3(&self.pdyn.fr_r[i].clone()),
-        )
+        motor_of_rotor(self.pdyn.fr_o[i], rotor_from_mat(&self.pdyn.fr_r[i]))
+    }
+
+    fn frame_position(&mut self, name: &str) -> Vec3 {
+        let q = self.q.clone();
+        self.pdyn.frames(&q);
+        if name == TASK_FRAME {
+            return self.chain.tip_position(&self.pdyn.fr_o, &self.pdyn.fr_r);
+        }
+        self.pdyn.fr_o[self.body_index(name)]
     }
 
     fn frame_jacobian(&mut self, name: &str) -> Mat {
         let q = self.q.clone();
         self.pdyn.frames(&q);
         let p = if name == TASK_FRAME {
-            self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0
+            self.chain.tip_position(&self.pdyn.fr_o, &self.pdyn.fr_r)
         } else {
             self.pdyn.fr_o[self.body_index(name)]
         };
@@ -200,7 +205,7 @@ impl Plant for ChainPlant {
         let q = self.q.clone();
         self.pdyn.frames(&q);
         let p = if name == TASK_FRAME {
-            self.chain.tip_pose(&self.pdyn.fr_o, &self.pdyn.fr_r).0
+            self.chain.tip_position(&self.pdyn.fr_o, &self.pdyn.fr_r)
         } else {
             self.pdyn.fr_o[self.body_index(name)]
         };
@@ -483,14 +488,22 @@ impl Plant for FloatingChainPlant {
         self.pdyn.gravity_torques(self.base_p, self.base_rotor, &q)
     }
 
-    fn frame_pose(&mut self, name: &str) -> (Vec3, Quat) {
+    fn frame_motor(&mut self, name: &str) -> Multivector {
         if name == TASK_FRAME {
             let (p, r) = self.tip();
-            return (p, Quat::from_mat3(&r));
+            return motor_of_rotor(p, rotor_from_mat(&r));
         }
         let i = self.node_of(name);
         let (o, r) = self.frames();
-        (o[i], Quat::from_mat3(&r[i]))
+        motor_of_rotor(o[i], rotor_from_mat(&r[i]))
+    }
+
+    fn frame_position(&mut self, name: &str) -> Vec3 {
+        if name == TASK_FRAME {
+            return self.tip().0;
+        }
+        let i = self.node_of(name);
+        self.frames().0[i]
     }
 
     fn frame_jacobian(&mut self, name: &str) -> Mat {

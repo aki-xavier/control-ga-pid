@@ -20,11 +20,11 @@ use crate::opts::{GainMode, PlaneTaskLoopOpts};
 use crate::recruit::Recruitment;
 use crate::wrench_source::{self, RealizeCtx};
 use control_base::efference::Efference;
-use control_base::plant::{Plant, TaskMap};
+use control_base::plant::{rotvec_between, Plant, TaskMap};
 use control_math::lstsq::DampedLstsq;
 use control_math::mat::Mat;
-use control_math::quat::Quat;
 use control_math::vec3::Vec3;
+use pga::Multivector;
 
 const DBG_INTERNAL: bool = false;
 
@@ -327,7 +327,7 @@ impl PlaneTaskLoop {
             );
         }
         // A POINT task has no rotation, so a six-plane reading asks for three numbers that are not
-        // there. `task_pose` answers the identity and `task_full_jacobian` an empty matrix rather than
+        // there. `task_motor` and `task_rotation` answer the identity and `task_full_jacobian` an empty one rather than
         // inventing rows, which is why this has to be said BEFORE either is used.
         if s.task_is_a_point() && self.m == 6 {
             eprintln!(
@@ -834,11 +834,11 @@ impl PlaneTaskLoop {
         &mut self,
         plant: &mut dyn Plant,
         target_pos: Vec3,
-        target_quat: Quat,
+        target_rotor: Multivector,
         dt: f64,
         contact_f: &[f64],
     ) -> Vec<f64> {
-        self.step_ff(plant, target_pos, target_quat, &[], &[], dt, contact_f)
+        self.step_ff(plant, target_pos, target_rotor, &[], &[], dt, contact_f)
     }
 
     /// Feedforward form of step: F = Lambda (a_ref + wn^2 e + 2 zeta wn (v_ref - v)); empty refs = static.
@@ -847,7 +847,7 @@ impl PlaneTaskLoop {
         &mut self,
         plant: &mut dyn Plant,
         target_pos: Vec3,
-        target_quat: Quat,
+        target_rotor: Multivector,
         ref_vel: &[f64],
         ref_acc: &[f64],
         dt: f64,
@@ -890,7 +890,8 @@ impl PlaneTaskLoop {
                 self.q_ref = q.clone();
             }
         }
-        let (cur, cq) = plant.task_pose();
+        let cur = plant.task_position();
+        let cr = plant.task_rotation();
         let mut goal = target_pos;
         if self.shape_goal && !self.keepouts.is_empty() {
             let (sg, _, _) =
@@ -904,7 +905,7 @@ impl PlaneTaskLoop {
         e[1] = dp.y;
         e[2] = dp.z;
         if m == 6 {
-            let rot = Quat::rotvec_between(target_quat, cq);
+            let rot = rotvec_between(target_rotor, cr);
             e[3] = rot.x;
             e[4] = rot.y;
             e[5] = rot.z;

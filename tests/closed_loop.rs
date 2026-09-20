@@ -38,7 +38,8 @@ fn chain_home(wn: f64, zeta: f64) -> (ChainPlant, PlaneTaskLoop) {
 #[test]
 fn the_poles_command_is_the_metric_applied_to_the_law() {
     let (mut plant, mut lp) = chain_home(15.0, 0.9);
-    let (cur, cq) = plant.task_pose();
+    let cur = plant.task_position();
+    let cq = plant.task_rotation();
     // only z moves; the other planes are commanded to hold
     let target = cur.add(Vec3::new(0.0, 0.0, 0.01));
 
@@ -61,7 +62,7 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
             tau[i]
         );
     }
-    let (cur2, _) = plant.task_pose();
+    let cur2 = plant.task_position();
     let tau0 = lp.step(&mut plant, cur2, cq, DT, &[]);
     for i in 0..6 {
         assert!(
@@ -76,17 +77,18 @@ fn the_poles_command_is_the_metric_applied_to_the_law() {
 #[test]
 fn a_setpoint_step_settles_on_its_target() {
     let (mut plant, mut lp) = chain_home(15.0, 0.9);
-    let (cur, cq) = plant.task_pose();
+    let cur = plant.task_position();
+    let cq = plant.task_rotation();
     let target = cur.add(Vec3::new(0.05, 0.03, -0.02));
 
     let mut worst: f64 = 0.0;
     for _ in 0..4000 {
         let tau = lp.step(&mut plant, target, cq, DT, &[]);
         plant.step(&tau, 1);
-        let (p, _) = plant.task_pose();
+        let p = plant.task_position();
         worst = worst.max(p.sub(target).norm());
     }
-    let (p, _) = plant.task_pose();
+    let p = plant.task_position();
     let e = p.sub(target).norm();
     assert!(e < 5e-4, "the tip ended {e} m from its target");
     assert!(
@@ -99,7 +101,8 @@ fn a_setpoint_step_settles_on_its_target() {
 #[test]
 fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
     let (mut plant, mut lp) = chain_home(15.0, 0.9);
-    let (cur, cq) = plant.task_pose();
+    let cur = plant.task_position();
+    let cq = plant.task_rotation();
     let target = cur.add(Vec3::new(0.02, 0.0, -0.03));
 
     let ticks = 50;
@@ -140,7 +143,8 @@ fn the_efference_copy_pairs_the_command_with_what_the_plant_applied() {
 #[test]
 fn the_metric_refresh_is_driven_by_the_stamp() {
     let (mut plant, mut lp) = chain_home(15.0, 0.9);
-    let (cur, cq) = plant.task_pose();
+    let cur = plant.task_position();
+    let cq = plant.task_rotation();
     assert_eq!(
         plant.stamp_calls, 0,
         "the loop asked for the stamp before it ticked"

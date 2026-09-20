@@ -8,7 +8,7 @@ use control_model::urdf::{home_q, load_urdf_chain, urdf_path};
 fn lam_at(chain: &control_model::urdf::UrdfChain, pdyn: &mut PgaDynamicsModel, q: &[f64]) -> Mat {
     let m = pdyn.mass_matrix(q);
     let (o, r) = chain.fk(q);
-    let (tip, _) = chain.tip_pose(&o, &r);
+    let tip = chain.tip_position(&o, &r);
     let j = chain.full_jacobian(&o, &r, tip);
     task_space_inertia(&m, &j, chain.n)
 }

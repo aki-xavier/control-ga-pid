@@ -24,11 +24,11 @@ license = "MIT"
 [dependencies]
 control-math = { path = "../control-math" }
 control-base = { path = "../control-base" }
+# the law states its task target as a PGA rotor, so the algebra crate is part of its own surface
+pga = { path = "../pga" }
 
 [dev-dependencies]
 control-model = { path = "../control-model" }
-# the base pose the fake plant carries is a PGA rotor, which the model it drives takes
-pga = { path = "../pga" }
 # The comment rules, for the test that holds this project to them: a sibling project, like the two
 # dependencies above, that reads text and needs no toolchain of its own.
 comment-why = { path = "../comment-why" }

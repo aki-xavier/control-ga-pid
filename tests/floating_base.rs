@@ -10,7 +10,6 @@ use control_ga_pid::keepout::Keepout;
 use control_ga_pid::opts::{AvoidOpts, GainMode, GainOpts, IntegralOpts, PlaneTaskLoopOpts};
 use control_ga_pid::plane_ko::PlaneKo;
 use control_ga_pid::task_loop::PlaneTaskLoop;
-use control_math::quat::Quat;
 use control_math::vec3::Vec3;
 use control_model::urdf::{home_q, urdf_path};
 
@@ -128,14 +127,16 @@ fn the_two_models_are_the_same_machine_at_the_same_state() {
         "the joint columns of the task Jacobian are not the welded machine's: {worst_j:e}"
     );
     // and the task frame itself is one point, not two conventions of it
-    let (p_f, q_f) = fixed.task_pose();
-    let (p_g, q_g) = float.task_pose();
+    let p_f = fixed.task_position();
+    let q_f = fixed.task_rotation();
+    let p_g = float.task_position();
+    let q_g = float.task_rotation();
     assert!(
         (p_f.sub(p_g)).norm() < 1e-12,
         "the two tips are {} apart",
         (p_f.sub(p_g)).norm()
     );
-    assert!(Quat::rotvec_between(q_f, q_g).norm() < 1e-12);
+    assert!(control_base::plant::rotvec_between(q_f, q_g).norm() < 1e-12);
 }
 
 /// THE STATEMENT THE WHOLE CHANGE RESTS ON: bounding the base rows by a very large number is a weld — a
@@ -146,8 +147,9 @@ fn a_large_bound_at_the_base_commands_the_fixed_machines_joint_rows() {
     let (mut fixed, mut lp_f) = fixed_chain(15.0, 0.9);
     let mut float = floating_home();
     let mut lp_g = loop_for(&float, 15.0, 0.9, Some(WELD));
-    let (cur_f, cq_f) = fixed.task_pose();
-    let (cur_g, _) = float.task_pose();
+    let cur_f = fixed.task_position();
+    let cq_f = fixed.task_rotation();
+    let cur_g = float.task_position();
     let step = Vec3::new(0.01, -0.02, 0.03);
 
     let tau_f = lp_f.step(&mut fixed, cur_f.add(step), cq_f, DT, &[]);
@@ -181,8 +183,9 @@ fn a_large_bound_at_the_base_moves_the_machine_like_the_fixed_one() {
     let (mut fixed, mut lp_f) = fixed_chain(15.0, 0.9);
     let mut float = floating_home();
     let mut lp_g = loop_for(&float, 15.0, 0.9, Some(WELD));
-    let (cur_f, cq_f) = fixed.task_pose();
-    let (_cur_g, _) = float.task_pose();
+    let cur_f = fixed.task_position();
+    let cq_f = fixed.task_rotation();
+    let _cur_g = float.task_position();
     let target = cur_f.add(Vec3::new(0.04, 0.02, -0.03));
 
     let mut worst: f64 = 0.0;
@@ -191,8 +194,8 @@ fn a_large_bound_at_the_base_moves_the_machine_like_the_fixed_one() {
         let tau_g = lp_g.step(&mut float, target, cq_f, DT, &[]);
         fixed.step(&tau_f, 1);
         float.step(&tau_g, 1);
-        let (p_f, _) = fixed.task_pose();
-        let (p_g, _) = float.task_pose();
+        let p_f = fixed.task_position();
+        let p_g = float.task_position();
         worst = worst.max(p_f.sub(p_g).norm());
     }
     assert!(
@@ -222,7 +225,8 @@ fn a_bound_short_of_the_demand_is_what_lets_the_base_give_way() {
     );
     let bound = 0.5 * weight[5].abs();
     let mut lp_g = loop_for(&float, 15.0, 0.9, Some(bound));
-    let (cur, cq) = float.task_pose();
+    let cur = float.task_position();
+    let cq = float.task_rotation();
     for _ in 0..200 {
         let tau = lp_g.step(&mut float, cur, cq, DT, &[]);
         assert!(
@@ -251,7 +255,8 @@ fn a_bound_short_of_the_demand_is_what_lets_the_base_give_way() {
 fn a_base_nobody_bounds_is_written_by_nobody_and_the_reading_is_the_free_one() {
     let mut float = floating_home();
     let mut lp_g = loop_for(&float, 15.0, 0.9, None);
-    let (cur, cq) = float.task_pose();
+    let cur = float.task_position();
+    let cq = float.task_rotation();
     let target = cur.add(Vec3::new(0.0, 0.02, 0.0));
     let tau = lp_g.step(&mut float, target, cq, DT, &[]);
     for i in 0..6 {
@@ -295,7 +300,8 @@ fn a_bound_in_some_base_directions_only_is_read_as_no_actuator() {
     for i in 1..6 {
         lp_g.u_lim[i] = 0.0;
     }
-    let (cur, cq) = float.task_pose();
+    let cur = float.task_position();
+    let cq = float.task_rotation();
     let tau = lp_g.step(&mut float, cur, cq, DT, &[]);
     for i in 0..6 {
         assert_eq!(
@@ -313,7 +319,8 @@ fn a_bound_in_some_base_directions_only_is_read_as_no_actuator() {
 fn the_efference_copy_covers_the_base_rows_too() {
     let mut float = floating_home();
     let mut lp_g = loop_for(&float, 15.0, 0.9, Some(WELD));
-    let (cur, cq) = float.task_pose();
+    let cur = float.task_position();
+    let cq = float.task_rotation();
     let target = cur.add(Vec3::new(0.02, 0.0, -0.03));
     let ticks = 50;
     for _ in 0..ticks {
@@ -347,7 +354,7 @@ fn the_whole_arm_escape_is_written_in_the_joints_a_held_base_leaves() {
     let mut plant = floating_home();
     let n = plant.nv();
     // a plane through the tip's own position, so the escape is engaged from the first tick
-    let (cur, _) = plant.task_pose();
+    let cur = plant.task_position();
     let u_lim = {
         let mut u = vec![0.0; n];
         for x in u.iter_mut().take(6) {
@@ -381,7 +388,8 @@ fn the_whole_arm_escape_is_written_in_the_joints_a_held_base_leaves() {
             ..Default::default()
         },
     );
-    let (_, cq) = plant.task_pose();
+    let _ = plant.task_position();
+    let cq = plant.task_rotation();
     let p0 = plant.base_p;
     for _ in 0..50 {
         let tau = lp.step(&mut plant, cur, cq, DT, &[]);
