@@ -2,7 +2,6 @@
 
 use control_ga_pid::box_ko::BoxKo;
 use control_ga_pid::budget::{budget_verdict, MotionBudget};
-use control_ga_pid::class::{class_fast_swing, class_precision_hand, TaskClass};
 use control_ga_pid::design::PlaneDesign;
 use control_ga_pid::design::{alpha_for_ti, zeta_from_overshoot};
 use control_ga_pid::escape::TaskAvoidance;
@@ -79,36 +78,6 @@ fn zeta_from_overshoot_hits_the_textbook_points() {
         "Mp for zeta = 0.5 inverted to zeta = {z}"
     );
     assert!(zeta_from_overshoot(0.02) > zeta_from_overshoot(0.10));
-}
-
-#[test]
-fn task_class_derives_the_motion_tier() {
-    // tighter Mp buys damping, shorter Ts buys bandwidth
-    let ph = class_precision_hand();
-    let fs = class_fast_swing();
-    let wp = ph.window(1e-3);
-    let wf = fs.window(1e-3);
-    assert!(wp.feasible);
-    assert!(wf.feasible);
-    assert!(wp.zeta > wf.zeta);
-    assert!(wf.wn > wp.wn);
-    assert!((wp.zeta - 0.78).abs() < 0.01, "zeta = {}", wp.zeta);
-    assert!((wp.wn - 10.3).abs() < 0.1, "wn = {}", wp.wn);
-    assert!((wf.wn - 33.8).abs() < 0.2, "wn = {}", wf.wn);
-    assert!(ph.spec(1e-3).design().alpha > 0.0);
-    assert_eq!(fs.spec(1e-3).design().alpha, 0.0);
-    assert!(fs.spec(1e-3).lead);
-    assert!(!ph.spec(1e-3).lead);
-    let hard = TaskClass {
-        mp: 0.0,
-        ts: 1e-5,
-        ti: 0.0,
-        e_deadband: 0.0,
-        lead: false,
-    };
-    assert!(!hard.window(1e-3).feasible);
-    assert_eq!(hard.window(1e-3).wn, 0.0);
-    assert!(!hard.window(1e-3).reason.is_empty());
 }
 
 #[test]

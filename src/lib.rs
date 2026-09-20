@@ -3,7 +3,6 @@
 pub mod base;
 pub mod box_ko;
 pub mod budget;
-pub mod class;
 pub mod design;
 pub mod escape;
 pub mod gains;
